@@ -232,7 +232,7 @@ export async function resolveAutoStrategyOrder(
 
     if (routingStrategy !== "rules") {
       try {
-        const decision = selectWithStrategy(
+        const decision = await selectWithStrategy(
           routableCandidates,
           {
             taskType,
@@ -256,7 +256,7 @@ export async function resolveAutoStrategyOrder(
     }
 
     if (!selectedProvider || !selectedModel) {
-      const selection = selectAutoProvider(
+      const selection = await selectAutoProvider(
         {
           id: combo.id || combo.name,
           name: combo.name,

@@ -1763,11 +1763,8 @@ export function resetAccountState<T extends AccountState | null | undefined>(
   // Best-effort: a DB write failure must not crash the request path.
   const connId = (account as AccountState | null | undefined)?.id;
   if (typeof connId === "string" && connId.length > 0) {
-    try {
-      setConnectionRateLimitUntil(connId, null);
-    } catch {
-      // ignore — best effort
-    }
+    // Best-effort fire-and-forget — must not crash the (sync) request path.
+    setConnectionRateLimitUntil(connId, null).catch(() => {});
   }
   return {
     ...account,
@@ -1832,13 +1829,10 @@ export function applyErrorState<T extends AccountState | null | undefined>(
     effectiveCooldownMs > 0 &&
     nextState.rateLimitedUntil
   ) {
-    try {
-      const untilMs = cooldownUntilMs(nextState.rateLimitedUntil);
-      if (Number.isFinite(untilMs) && untilMs > Date.now()) {
-        setConnectionRateLimitUntil(connId, untilMs);
-      }
-    } catch {
-      // ignore — best effort
+    const untilMs = cooldownUntilMs(nextState.rateLimitedUntil);
+    if (Number.isFinite(untilMs) && untilMs > Date.now()) {
+      // Best-effort fire-and-forget — must not crash the (sync) request path.
+      setConnectionRateLimitUntil(connId, untilMs).catch(() => {});
     }
   }
 

@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const resolved = resolveAllFeatureFlags();
+    const resolved = await resolveAllFeatureFlags();
 
     const flags = resolved.map(({ key, effectiveValue, source, definition }) => ({
       key,
@@ -109,19 +109,19 @@ export async function PUT(request: NextRequest) {
 
   try {
     // Capture previous state before modifying
-    const allFlagsBefore = resolveAllFeatureFlags();
+    const allFlagsBefore = await resolveAllFeatureFlags();
     const prevFlag = allFlagsBefore.find((f) => f.key === key);
     const previousValue = prevFlag?.effectiveValue ?? definition.defaultValue;
     const previousSource = prevFlag?.source ?? "default";
 
     if (value === undefined) {
-      removeFeatureFlagOverride(key);
+      await removeFeatureFlagOverride(key);
     } else {
-      setFeatureFlagOverride(key, value);
+      await setFeatureFlagOverride(key, value);
     }
 
     // After write — get new effective value
-    const allFlagsAfter = resolveAllFeatureFlags();
+    const allFlagsAfter = await resolveAllFeatureFlags();
     const updatedFlag = allFlagsAfter.find((f) => f.key === key);
     const newEffectiveValue = updatedFlag?.effectiveValue ?? definition.defaultValue;
     const newSource = updatedFlag?.source ?? "default";
@@ -149,10 +149,10 @@ export async function DELETE(request: NextRequest) {
   }
 
   try {
-    const overrides = getFeatureFlagOverrides();
+    const overrides = await getFeatureFlagOverrides();
     const count = Object.keys(overrides).length;
 
-    clearAllFeatureFlagOverrides();
+    await clearAllFeatureFlagOverrides();
 
     return NextResponse.json({
       cleared: count,

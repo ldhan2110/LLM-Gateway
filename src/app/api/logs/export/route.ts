@@ -31,7 +31,7 @@ export async function GET(request: Request) {
       // This intentionally differs from GET /api/usage/proxy-logs which exposes the
       // value as `clientIp`. Callers of this export endpoint should read `public_ip`.
       // This inconsistency will be resolved in a future DB migration (#2880).
-      rows = exportProxyLogsSince(since);
+      rows = await exportProxyLogsSince(since);
     }
 
     const filename = `omniroute-${tableName}-${hours}h-${new Date().toISOString().slice(0, 10)}.json`;

@@ -87,7 +87,7 @@ test("ensureReady: first call creates vec_memories with correct dim", async (t) 
   assert.equal(rows.cnt, 0, "vec_memories should exist (empty after creation)");
 
   // Verify meta was updated.
-  const meta = getMemoryVecMeta();
+  const meta = await getMemoryVecMeta();
   assert.equal(meta.embeddingSignature, "openai:text-embedding-3-small:1536");
   assert.equal(meta.activeDim, 1536);
   assert.equal(meta.vecLoaded, true);
@@ -102,13 +102,13 @@ test("ensureReady: second call with same signature is idempotent", async (t) => 
   await store.ensureReady(res);
 
   // Read meta after first call.
-  const meta1 = getMemoryVecMeta();
+  const meta1 = await getMemoryVecMeta();
 
   // Second call — should be no-op.
   const result = await store.ensureReady(res);
 
   assert.equal(result.ready, true);
-  const meta2 = getMemoryVecMeta();
+  const meta2 = await getMemoryVecMeta();
 
   // Meta should not have changed (lastResetAt remains the same).
   assert.equal(meta1.embeddingSignature, meta2.embeddingSignature);
@@ -135,8 +135,8 @@ test("ensureReady: signature change triggers reset + marks memories needs_reinde
   await store.ensureReady(resX);
 
   // Check X is set.
-  assert.equal(getMemoryVecMeta().embeddingSignature, "openai:ada-002:1024");
-  assert.equal(getMemoryVecMeta().activeDim, 1024);
+  assert.equal((await getMemoryVecMeta()).embeddingSignature, "openai:ada-002:1024");
+  assert.equal((await getMemoryVecMeta()).activeDim, 1024);
 
   // Now switch to signature Y (different model + dim).
   const resY = makeResolution("openai:text-embedding-3-small:1536", 1536);
@@ -145,7 +145,7 @@ test("ensureReady: signature change triggers reset + marks memories needs_reinde
   assert.equal(resetResult.ready, true, "should be ready after signature change");
 
   // Verify new signature is stored.
-  const metaAfter = getMemoryVecMeta();
+  const metaAfter = await getMemoryVecMeta();
   assert.equal(metaAfter.embeddingSignature, "openai:text-embedding-3-small:1536");
   assert.equal(metaAfter.activeDim, 1536);
   assert.ok(metaAfter.lastResetAt !== null, "lastResetAt should be set after reset");

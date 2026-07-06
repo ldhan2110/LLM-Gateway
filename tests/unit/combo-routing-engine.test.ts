@@ -140,7 +140,7 @@ async function resetStorage() {
   await cleanupTestDataDir();
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   await settingsDb.resetAllPricing();
-  settingsDb.clearAllLKGP();
+  await settingsDb.clearAllLKGP();
   clearModelsDevCapabilities();
 }
 
@@ -161,7 +161,7 @@ test.after(async () => {
   resetAllSemaphores();
   _resetAllDecks();
   clearModelsDevCapabilities();
-  settingsDb.clearAllLKGP();
+  await settingsDb.clearAllLKGP();
   if (ORIGINAL_DATA_DIR === undefined) {
     delete process.env.DATA_DIR;
   } else {

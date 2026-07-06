@@ -1,4 +1,4 @@
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 import { Memory, MemoryConfig } from "./types";
 import { MemoryConfigSchema } from "./schemas";
 import { logger } from "../../../open-sse/utils/logger.ts";
@@ -51,24 +51,26 @@ export { estimateTokens } from "./retrieval/scoring";
 
 // ──────────────── Helpers ────────────────
 
-function hasTable(tableName: string): boolean {
-  const db = getDbInstance();
-  const row = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(tableName) as { name?: string } | undefined;
+async function hasTable(tableName: string): Promise<boolean> {
+  const db = getDbClient();
+  const row = await db.get<{ name?: string }>(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    tableName
+  );
   return row?.name === tableName;
 }
 
 /**
  * Fetch memories from SQLite by an array of IDs, preserving order.
  */
-function fetchMemoriesByIds(ids: string[]): Memory[] {
+async function fetchMemoriesByIds(ids: string[]): Promise<Memory[]> {
   if (ids.length === 0) return [];
-  const db = getDbInstance();
+  const db = getDbClient();
   const placeholders = ids.map(() => "?").join(", ");
-  const rows = db
-    .prepare(`SELECT * FROM memories WHERE id IN (${placeholders})`)
-    .all(...ids) as MemoryRow[];
+  const rows = await db.all<MemoryRow>(
+    `SELECT * FROM memories WHERE id IN (${placeholders})`,
+    ...ids
+  );
 
   const byId = new Map<string, Memory>();
   for (const row of rows) {
@@ -94,9 +96,9 @@ interface FtsColConfig {
  * Build the FTS5 rows for a given apiKeyId + config + query.
  * Returns MemoryRow array (or falls back to empty on error).
  */
-function buildFtsRows(apiKeyId: string, config: FtsColConfig): MemoryRow[] {
+async function buildFtsRows(apiKeyId: string, config: FtsColConfig): Promise<MemoryRow[]> {
   if (!config.query) return [];
-  const db = getDbInstance();
+  const db = getDbClient();
   const {
     apiKeyCol,
     expiresCol,
@@ -130,7 +132,7 @@ function buildFtsRows(apiKeyId: string, config: FtsColConfig): MemoryRow[] {
   }
 
   try {
-    return db.prepare(ftsQueryStr).all(...ftsParams) as MemoryRow[];
+    return await db.all<MemoryRow>(ftsQueryStr, ...ftsParams);
   } catch {
     return [];
   }
@@ -264,7 +266,7 @@ async function retrieveMemoriesInternal(
   const maxTokens = Math.min(Math.max(normalizedConfig.maxTokens, 1), 8000);
   const strategy = normalizedConfig.retrievalStrategy;
 
-  const db = getDbInstance();
+  const db = getDbClient();
   // Plan 21 FAIL #2 fix: include "qdrant" in the tier union so that the
   // Qdrant tier-2 branch in semantic/hybrid below can push hits with that tier.
   const memories: Array<{
@@ -274,7 +276,7 @@ async function retrieveMemoriesInternal(
   }> = [];
   let totalTokens = 0;
 
-  const useModernTable = hasTable("memories");
+  const useModernTable = await hasTable("memories");
   const tableName = useModernTable ? "memories" : "memory";
   const columns = useModernTable
     ? {
@@ -314,7 +316,7 @@ async function retrieveMemoriesInternal(
 
   // Execute query based on strategy
   let rows: MemoryRow[];
-  const ftsAvailable = useModernTable && hasTable("memory_fts");
+  const ftsAvailable = useModernTable && (await hasTable("memory_fts"));
 
   const ftsColConfig: FtsColConfig = {
     apiKeyCol: columns.apiKeyId,
@@ -346,7 +348,7 @@ async function retrieveMemoriesInternal(
               });
               if (qres.ok && qres.results && qres.results.length > 0) {
                 const hitIds = qres.results.map((r) => r.id);
-                const hitMemories = fetchMemoriesByIds(hitIds);
+                const hitMemories = await fetchMemoriesByIds(hitIds);
                 const scoreMap = new Map(qres.results.map((r) => [r.id, r.score]));
                 let qdrantItems = hitMemories.map((m) => ({
                   memory: m,
@@ -395,7 +397,7 @@ async function retrieveMemoriesInternal(
                 await vec.ensureReady(resolution);
                 const hits = await vec.searchVector(embeddingResult.vector, 100, apiKeyId);
                 const hitIds = hits.map((h) => h.memoryId);
-                const hitMemories = fetchMemoriesByIds(hitIds);
+                const hitMemories = await fetchMemoriesByIds(hitIds);
                 const scoreMap = new Map(hits.map((h) => [h.memoryId, h.score]));
 
                 let rankedItems = hitMemories.map((m) => ({
@@ -446,14 +448,14 @@ async function retrieveMemoriesInternal(
 
       // Degraded path: FTS5 keyword
       if (config.query && ftsAvailable) {
-        rows = buildFtsRows(apiKeyId, ftsColConfig);
+        rows = await buildFtsRows(apiKeyId, ftsColConfig);
         if (rows.length === 0) {
           query += ` ORDER BY ${columns.createdAt} DESC LIMIT 100`;
-          rows = db.prepare(query).all(...params) as MemoryRow[];
+          rows = await db.all<MemoryRow>(query, ...params);
         }
       } else {
         query += ` ORDER BY ${columns.createdAt} DESC LIMIT 100`;
-        rows = db.prepare(query).all(...params) as MemoryRow[];
+        rows = await db.all<MemoryRow>(query, ...params);
       }
       break;
     }
@@ -474,7 +476,7 @@ async function retrieveMemoriesInternal(
               });
               if (qres.ok && qres.results && qres.results.length > 0) {
                 const hitIds = qres.results.map((r) => r.id);
-                const hitMemories = fetchMemoriesByIds(hitIds);
+                const hitMemories = await fetchMemoriesByIds(hitIds);
                 const scoreMap = new Map(qres.results.map((r) => [r.id, r.score]));
                 let qdrantItems = hitMemories.map((m) => ({
                   memory: m,
@@ -528,7 +530,7 @@ async function retrieveMemoriesInternal(
                   apiKeyId
                 );
                 const hitIds = hybridHits.map((h) => h.memoryId);
-                const hitMemories = fetchMemoriesByIds(hitIds);
+                const hitMemories = await fetchMemoriesByIds(hitIds);
                 const scoreMap = new Map(
                   hybridHits.map((h) => [
                     h.memoryId,
@@ -588,11 +590,11 @@ async function retrieveMemoriesInternal(
       // Degraded path: FTS5 + keyword union
       let ftsRows: MemoryRow[] = [];
       if (config.query && ftsAvailable) {
-        ftsRows = buildFtsRows(apiKeyId, ftsColConfig);
+        ftsRows = await buildFtsRows(apiKeyId, ftsColConfig);
       }
       // Get chronological results for keyword scoring
       query += ` ORDER BY ${columns.createdAt} DESC LIMIT 100`;
-      const keywordRows = db.prepare(query).all(...params) as MemoryRow[];
+      const keywordRows = await db.all<MemoryRow>(query, ...params);
 
       // Union: FTS5 results first (higher relevance), then keyword results, dedup by id
       const seen = new Set<string>();
@@ -610,7 +612,7 @@ async function retrieveMemoriesInternal(
     case "exact":
     default: {
       query += ` ORDER BY ${columns.createdAt} DESC LIMIT 100`;
-      rows = db.prepare(query).all(...params) as MemoryRow[];
+      rows = await db.all<MemoryRow>(query, ...params);
     }
   }
 
@@ -672,9 +674,9 @@ export async function retrievePreview(
   const result: RetrievePreviewItem[] = [];
   let totalTokens = 0;
 
-  const useModernTable = hasTable("memories");
-  const ftsAvailable = useModernTable && hasTable("memory_fts");
-  const db = getDbInstance();
+  const useModernTable = await hasTable("memories");
+  const ftsAvailable = useModernTable && (await hasTable("memory_fts"));
+  const db = getDbClient();
 
   const tableName = useModernTable ? "memories" : "memory";
   const apiKeyCol = useModernTable ? "api_key_id" : "apiKeyId";
@@ -700,7 +702,7 @@ export async function retrievePreview(
           );
           if (qres.ok && qres.results && qres.results.length > 0) {
             const hitIds = qres.results.map((r) => r.id);
-            const hitMemories = fetchMemoriesByIds(hitIds).slice(0, limit);
+            const hitMemories = (await fetchMemoriesByIds(hitIds)).slice(0, limit);
             const scoreMap = new Map(qres.results.map((r) => [r.id, r.score]));
             let items: Array<{
               memory: Memory;
@@ -770,7 +772,7 @@ export async function retrievePreview(
                 apiKeyId ?? undefined
               );
               const hitIds = hits.map((h) => h.memoryId);
-              const hitMemories = fetchMemoriesByIds(hitIds).slice(0, limit);
+              const hitMemories = (await fetchMemoriesByIds(hitIds)).slice(0, limit);
               const scoreMap = new Map(hits.map((h) => [h.memoryId, h.score]));
 
               let items: Array<{
@@ -812,7 +814,7 @@ export async function retrievePreview(
                 apiKeyId ?? undefined
               );
               const hitIds = hybridHits.map((h) => h.memoryId);
-              const hitMemories = fetchMemoriesByIds(hitIds);
+              const hitMemories = await fetchMemoriesByIds(hitIds);
               const scoreMap = new Map(
                 hybridHits.map((h) => [
                   h.memoryId,
@@ -901,7 +903,7 @@ export async function retrievePreview(
     baseQuery += ` ORDER BY ${createdCol} DESC LIMIT ?`;
     baseParams.push(limit);
 
-    const rows = db.prepare(baseQuery).all(...baseParams) as MemoryRow[];
+    const rows = await db.all<MemoryRow>(baseQuery, ...baseParams);
     for (const row of rows) {
       if (result.length >= limit) break;
       const memory = rowToMemory(row);
@@ -920,7 +922,7 @@ export async function retrievePreview(
         : `SELECT m.* FROM ${tableName} m JOIN memory_fts f ON m.memory_id = f.rowid WHERE f.memory_fts MATCH ? ORDER BY f.rank LIMIT ?`;
       const ftsP: unknown[] = apiKeyId ? [query, apiKeyId, limit] : [query, limit];
       try {
-        ftsRows = db.prepare(ftsQueryStr).all(...ftsP) as MemoryRow[];
+        ftsRows = await db.all<MemoryRow>(ftsQueryStr, ...ftsP);
       } catch {
         ftsRows = [];
       }
@@ -929,7 +931,7 @@ export async function retrievePreview(
     if (ftsRows.length === 0) {
       baseQuery += ` ORDER BY ${createdCol} DESC LIMIT ?`;
       baseParams.push(limit);
-      ftsRows = db.prepare(baseQuery).all(...baseParams) as MemoryRow[];
+      ftsRows = await db.all<MemoryRow>(baseQuery, ...baseParams);
     }
 
     for (const row of ftsRows) {

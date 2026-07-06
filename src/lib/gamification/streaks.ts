@@ -8,7 +8,7 @@
  * @module lib/gamification/streaks
  */
 
-import { getDbInstance, isBuildPhase, isCloud } from "../db/core";
+import { getDbClient, isBuildPhase, isCloud } from "../db/core";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -21,16 +21,6 @@ export interface StreakData {
   lastActiveDate: string;
   /** Date the current streak started (YYYY-MM-DD) */
   streakStartDate: string;
-}
-
-interface StatementLike<TRow = unknown> {
-  get: (...params: unknown[]) => TRow | undefined;
-  run: (...params: unknown[]) => { changes?: number };
-  all: (...params: unknown[]) => TRow[];
-}
-
-interface DbLike {
-  prepare: <TRow = unknown>(sql: string) => StatementLike<TRow>;
 }
 
 interface KeyValueRow {
@@ -98,10 +88,12 @@ function parseStreakJson(raw: string): StreakData {
 export async function getStreak(apiKeyId: string): Promise<StreakData> {
   if (isBuildPhase || isCloud) return emptyStreak();
 
-  const db = getDbInstance() as unknown as DbLike;
-  const row = db
-    .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
-    .get(NAMESPACE, apiKeyId) as KeyValueRow | undefined;
+  const db = getDbClient();
+  const row = await db.get<KeyValueRow>(
+    "SELECT value FROM key_value WHERE namespace = ? AND key = ?",
+    NAMESPACE,
+    apiKeyId
+  );
 
   if (!row?.value) return emptyStreak();
   return parseStreakJson(row.value);
@@ -127,7 +119,7 @@ export async function getStreak(apiKeyId: string): Promise<StreakData> {
 export async function updateStreak(apiKeyId: string): Promise<number> {
   if (isBuildPhase || isCloud) return 0;
 
-  const db = getDbInstance() as unknown as DbLike;
+  const db = getDbClient();
   const today = todayUtc();
   const streak = await getStreak(apiKeyId);
 
@@ -154,7 +146,8 @@ export async function updateStreak(apiKeyId: string): Promise<number> {
     streakStartDate: newStreak === 1 ? today : streak.streakStartDate,
   };
 
-  db.prepare("INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)").run(
+  await db.run(
+    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)",
     NAMESPACE,
     apiKeyId,
     JSON.stringify(newData)

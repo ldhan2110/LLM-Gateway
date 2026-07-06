@@ -8,7 +8,7 @@
  */
 
 import { v4 as uuidv4 } from "uuid";
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 // ──────────────────────────────────────────────────────────
 // Types
@@ -82,17 +82,15 @@ function rowToMapping(row: MappingRow): ModelComboMapping {
  * Ordered by priority descending (highest first).
  */
 export async function getModelComboMappings(): Promise<ModelComboMapping[]> {
-  const db = getDbInstance();
-  const rows = db
-    .prepare(
-      `SELECT m.id, m.pattern, m.combo_id, c.name AS combo_name,
+  const db = getDbClient();
+  const rows = await db.all<MappingRow>(
+    `SELECT m.id, m.pattern, m.combo_id, c.name AS combo_name,
               m.priority, m.enabled, m.description,
               m.created_at, m.updated_at
        FROM model_combo_mappings m
        LEFT JOIN combos c ON c.id = m.combo_id
        ORDER BY m.priority DESC, m.created_at ASC`
-    )
-    .all() as MappingRow[];
+  );
   return rows.map(rowToMapping);
 }
 
@@ -100,17 +98,16 @@ export async function getModelComboMappings(): Promise<ModelComboMapping[]> {
  * Get a single mapping by ID.
  */
 export async function getModelComboMappingById(id: string): Promise<ModelComboMapping | null> {
-  const db = getDbInstance();
-  const row = db
-    .prepare(
-      `SELECT m.id, m.pattern, m.combo_id, c.name AS combo_name,
+  const db = getDbClient();
+  const row = await db.get<MappingRow>(
+    `SELECT m.id, m.pattern, m.combo_id, c.name AS combo_name,
               m.priority, m.enabled, m.description,
               m.created_at, m.updated_at
        FROM model_combo_mappings m
        LEFT JOIN combos c ON c.id = m.combo_id
-       WHERE m.id = ?`
-    )
-    .get(id) as MappingRow | undefined;
+       WHERE m.id = ?`,
+    id
+  );
   return row ? rowToMapping(row) : null;
 }
 
@@ -124,15 +121,14 @@ export async function createModelComboMapping(data: {
   enabled?: boolean;
   description?: string;
 }): Promise<ModelComboMapping> {
-  const db = getDbInstance();
+  const db = getDbClient();
   const now = new Date().toISOString();
   const id = uuidv4();
 
-  db.prepare(
+  await db.run(
     `INSERT INTO model_combo_mappings
      (id, pattern, combo_id, priority, enabled, description, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     data.pattern,
     data.comboId,
@@ -171,7 +167,7 @@ export async function updateModelComboMapping(
   const existing = await getModelComboMappingById(id);
   if (!existing) return null;
 
-  const db = getDbInstance();
+  const db = getDbClient();
   const now = new Date().toISOString();
   const updated = {
     pattern: data.pattern ?? existing.pattern,
@@ -181,12 +177,11 @@ export async function updateModelComboMapping(
     description: data.description ?? existing.description,
   };
 
-  db.prepare(
+  await db.run(
     `UPDATE model_combo_mappings
      SET pattern = ?, combo_id = ?, priority = ?, enabled = ?,
          description = ?, updated_at = ?
-     WHERE id = ?`
-  ).run(
+     WHERE id = ?`,
     updated.pattern,
     updated.combo_id,
     updated.priority,
@@ -203,8 +198,8 @@ export async function updateModelComboMapping(
  * Delete a model-combo mapping.
  */
 export async function deleteModelComboMapping(id: string): Promise<boolean> {
-  const db = getDbInstance();
-  const result = db.prepare("DELETE FROM model_combo_mappings WHERE id = ?").run(id);
+  const db = getDbClient();
+  const result = await db.run("DELETE FROM model_combo_mappings WHERE id = ?", id);
   return (result.changes ?? 0) > 0;
 }
 
@@ -222,18 +217,16 @@ export async function deleteModelComboMapping(id: string): Promise<boolean> {
 export async function resolveComboForModel(
   modelStr: string
 ): Promise<Record<string, unknown> | null> {
-  const db = getDbInstance();
+  const db = getDbClient();
 
   // Fetch enabled mappings, ordered by priority (highest first)
-  const rows = db
-    .prepare(
-      `SELECT m.pattern, m.combo_id, c.data AS combo_data
+  const rows = await db.all<{ pattern: string; combo_id: string; combo_data: string }>(
+    `SELECT m.pattern, m.combo_id, c.data AS combo_data
        FROM model_combo_mappings m
        JOIN combos c ON c.id = m.combo_id
        WHERE m.enabled = 1
        ORDER BY m.priority DESC, m.created_at ASC`
-    )
-    .all() as Array<{ pattern: string; combo_id: string; combo_data: string }>;
+  );
 
   for (const row of rows) {
     const regex = globToRegex(row.pattern);

@@ -1,5 +1,5 @@
 import { Memory, MemoryType } from "./types";
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 import { deleteMemory, createMemory } from "./store";
 
 export interface SummarizationResult {
@@ -13,16 +13,17 @@ export async function summarizeMemories(
   sessionId?: string,
   maxTokens: number = 4000
 ): Promise<SummarizationResult> {
-  const db = getDbInstance();
+  const db = getDbClient();
 
   const whereClause = sessionId
     ? "WHERE api_key_id = ? AND session_id = ?"
     : "WHERE api_key_id = ?";
-  const params = sessionId ? [apiKeyId, sessionId] : [apiKeyId];
+  const params: unknown[] = sessionId ? [apiKeyId, sessionId] : [apiKeyId];
 
-  const memories = db
-    .prepare(`SELECT * FROM memories ${whereClause} ORDER BY created_at DESC`)
-    .all(...params) as MemoryRow[];
+  const memories = await db.all<MemoryRow>(
+    `SELECT * FROM memories ${whereClause} ORDER BY created_at DESC`,
+    ...params
+  );
 
   if (memories.length === 0) {
     return { originalCount: 0, summarizedCount: 0, tokensSaved: 0 };
@@ -51,7 +52,8 @@ export async function summarizeMemories(
     const newTokens = estimateTokens(summary);
     tokensSaved += oldTokens - newTokens;
 
-    db.prepare("UPDATE memories SET content = ?, updated_at = ? WHERE id = ?").run(
+    await db.run(
+      "UPDATE memories SET content = ?, updated_at = ? WHERE id = ?",
       summary,
       new Date().toISOString(),
       mem.id
@@ -143,19 +145,20 @@ export async function summarizeMemoriesOlderThan(
   days: number,
   dryRun: boolean
 ): Promise<SummarizeOlderThanResult> {
-  const db = getDbInstance();
+  const db = getDbClient();
 
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
 
   const rows: MemoryRow[] = apiKeyId
-    ? (db
-        .prepare(
-          "SELECT * FROM memories WHERE api_key_id = ? AND created_at < ? ORDER BY created_at ASC"
-        )
-        .all(apiKeyId, cutoff) as MemoryRow[])
-    : (db
-        .prepare("SELECT * FROM memories WHERE created_at < ? ORDER BY created_at ASC")
-        .all(cutoff) as MemoryRow[]);
+    ? await db.all<MemoryRow>(
+        "SELECT * FROM memories WHERE api_key_id = ? AND created_at < ? ORDER BY created_at ASC",
+        apiKeyId,
+        cutoff
+      )
+    : await db.all<MemoryRow>(
+        "SELECT * FROM memories WHERE created_at < ? ORDER BY created_at ASC",
+        cutoff
+      );
 
   const candidates = rows.map(rowToMemory);
   const totalTokens = candidates.reduce((sum, m) => sum + estimateTokens(m.content), 0);

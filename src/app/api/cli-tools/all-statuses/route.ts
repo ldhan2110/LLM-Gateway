@@ -190,7 +190,7 @@ export async function GET(request: Request): Promise<Response> {
 
     // Merge last-configured timestamps from SQLite (non-critical)
     try {
-      const lastConfigured = getAllCliToolLastConfigured();
+      const lastConfigured = await getAllCliToolLastConfigured();
       for (const [toolId, timestamp] of Object.entries(lastConfigured)) {
         if (statuses[toolId]) {
           statuses[toolId].config.lastConfiguredAt = timestamp;

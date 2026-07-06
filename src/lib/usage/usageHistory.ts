@@ -7,7 +7,7 @@
  * @module lib/usage/usageHistory
  */
 
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 import { protectPayloadForLog } from "../logPayloads";
 import {
   asRecord,
@@ -501,7 +501,7 @@ const MAX_ROWS = 10000;
  * @param cursor - Timestamp cursor for pagination (exclusive, for next page)
  */
 export async function getUsageDb(sinceIso?: string | null, limit?: number, cursor?: string | null) {
-  const db = getDbInstance();
+  const db = getDbClient();
   const maxRows = Number.isFinite(Number(limit)) && Number(limit) > 0 ? Number(limit) : MAX_ROWS;
 
   let rows;
@@ -509,22 +509,27 @@ export async function getUsageDb(sinceIso?: string | null, limit?: number, curso
     // Cursor-based pagination (next page after cursor)
     // Use > cursor to get rows after the last timestamp of previous page (ASC order)
     rows = sinceIso
-      ? db
-          .prepare(
-            `SELECT * FROM usage_history WHERE timestamp >= ? AND timestamp > ? ORDER BY timestamp ASC LIMIT ?`
-          )
-          .all(sinceIso, cursor, maxRows)
-      : db
-          .prepare(`SELECT * FROM usage_history WHERE timestamp > ? ORDER BY timestamp ASC LIMIT ?`)
-          .all(cursor, maxRows);
+      ? await db.all(
+          `SELECT * FROM usage_history WHERE timestamp >= ? AND timestamp > ? ORDER BY timestamp ASC LIMIT ?`,
+          sinceIso,
+          cursor,
+          maxRows
+        )
+      : await db.all(
+          `SELECT * FROM usage_history WHERE timestamp > ? ORDER BY timestamp ASC LIMIT ?`,
+          cursor,
+          maxRows
+        );
   } else if (sinceIso) {
     // Initial query with date filter
-    rows = db
-      .prepare(`SELECT * FROM usage_history WHERE timestamp >= ? ORDER BY timestamp ASC LIMIT ?`)
-      .all(sinceIso, maxRows);
+    rows = await db.all(
+      `SELECT * FROM usage_history WHERE timestamp >= ? ORDER BY timestamp ASC LIMIT ?`,
+      sinceIso,
+      maxRows
+    );
   } else {
     // No filter - get all (with limit)
-    rows = db.prepare(`SELECT * FROM usage_history ORDER BY timestamp ASC LIMIT ?`).all(maxRows);
+    rows = await db.all(`SELECT * FROM usage_history ORDER BY timestamp ASC LIMIT ?`, maxRows);
   }
 
   const history = rows.map((row) => {
@@ -567,7 +572,7 @@ export async function saveRequestUsage(entry: any) {
   if (!shouldPersistToDisk) return;
 
   try {
-    const db = getDbInstance();
+    const db = getDbClient();
     const timestamp = entry.timestamp || new Date().toISOString();
     const serviceTier = normalizeServiceTier(entry.serviceTier ?? entry.service_tier);
 
@@ -583,10 +588,9 @@ export async function saveRequestUsage(entry: any) {
     // on the existing row, fill it in rather than inserting a duplicate.
     let inserted = false;
 
-    db.transaction(() => {
-      const existing = db
-        .prepare(
-          `SELECT id, endpoint FROM usage_history
+    await db.transaction(async (c) => {
+      const existing = await c.get<{ id: number; endpoint: string | null }>(
+        `SELECT id, endpoint FROM usage_history
            WHERE timestamp = ?
              AND COALESCE(provider, '')     = COALESCE(?, '')
              AND COALESCE(model, '')        = COALESCE(?, '')
@@ -594,22 +598,21 @@ export async function saveRequestUsage(entry: any) {
              AND COALESCE(api_key_id, '')   = COALESCE(?, '')
              AND tokens_input  = ?
              AND tokens_output = ?
-           ORDER BY id DESC LIMIT 1`
-        )
-        .get(
-          timestamp,
-          entry.provider || null,
-          entry.model || null,
-          entry.connectionId || null,
-          entry.apiKeyId || null,
-          tokensInput,
-          tokensOutput
-        ) as { id: number; endpoint: string | null } | undefined;
+           ORDER BY id DESC LIMIT 1`,
+        timestamp,
+        entry.provider || null,
+        entry.model || null,
+        entry.connectionId || null,
+        entry.apiKeyId || null,
+        tokensInput,
+        tokensOutput
+      );
 
       if (existing) {
         // Back-fill endpoint if the original row missed it.
         if (!existing.endpoint && entry.endpoint) {
-          db.prepare(`UPDATE usage_history SET endpoint = ? WHERE id = ?`).run(
+          await c.run(
+            `UPDATE usage_history SET endpoint = ? WHERE id = ?`,
             entry.endpoint,
             existing.id
           );
@@ -617,14 +620,13 @@ export async function saveRequestUsage(entry: any) {
         return; // duplicate — do not insert
       }
 
-      db.prepare(
+      await c.run(
         `
         INSERT INTO usage_history (provider, model, connection_id, api_key_id, api_key_name,
           tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_reasoning,
           service_tier, status, success, latency_ms, ttft_ms, error_code, combo_strategy, endpoint, timestamp)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-      ).run(
+      `,
         entry.provider || null,
         entry.model || null,
         entry.connectionId || null,
@@ -651,7 +653,7 @@ export async function saveRequestUsage(entry: any) {
       );
 
       inserted = true;
-    })();
+    });
 
     // Decoupled via the event bus so usageHistory never imports providerLimits
     // (which would pull the executors/translator graph into the type-check surface).
@@ -670,26 +672,26 @@ export async function saveRequestUsage(entry: any) {
  * Get usage history with optional filters.
  */
 export async function getUsageHistory(filter: any = {}) {
-  const db = getDbInstance();
+  const db = getDbClient();
   let sql = "SELECT * FROM usage_history";
   const conditions: string[] = [];
-  const params: Record<string, unknown> = {};
+  const queryParams: unknown[] = [];
 
   if (filter.provider) {
-    conditions.push("provider = @provider");
-    params.provider = filter.provider;
+    conditions.push("provider = ?");
+    queryParams.push(filter.provider);
   }
   if (filter.model) {
-    conditions.push("model = @model");
-    params.model = filter.model;
+    conditions.push("model = ?");
+    queryParams.push(filter.model);
   }
   if (filter.startDate) {
-    conditions.push("timestamp >= @startDate");
-    params.startDate = new Date(filter.startDate).toISOString();
+    conditions.push("timestamp >= ?");
+    queryParams.push(new Date(filter.startDate).toISOString());
   }
   if (filter.endDate) {
-    conditions.push("timestamp <= @endDate");
-    params.endDate = new Date(filter.endDate).toISOString();
+    conditions.push("timestamp <= ?");
+    queryParams.push(new Date(filter.endDate).toISOString());
   }
 
   if (conditions.length > 0) {
@@ -697,7 +699,7 @@ export async function getUsageHistory(filter: any = {}) {
   }
   sql += " ORDER BY timestamp ASC";
 
-  const rows = db.prepare(sql).all(params);
+  const rows = await db.all(sql, ...queryParams);
   return rows.map((row) => {
     const r = asRecord(row);
     return {
@@ -759,7 +761,7 @@ export async function getModelLatencyStats(
       ? Number(options.maxRows)
       : 10000;
 
-  const db = getDbInstance();
+  const db = getDbClient();
   const sinceIso = new Date(Date.now() - windowHours * 60 * 60 * 1000).toISOString();
 
   type LatencyRow = {
@@ -769,19 +771,19 @@ export async function getModelLatencyStats(
     latency_ms: number | null;
   };
 
-  const rows = db
-    .prepare(
-      `
+  const rows = await db.all<LatencyRow>(
+    `
       SELECT provider, model, success, latency_ms
       FROM usage_history
-      WHERE timestamp >= @sinceIso
+      WHERE timestamp >= ?
         AND provider IS NOT NULL
         AND model IS NOT NULL
       ORDER BY timestamp DESC
-      LIMIT @maxRows
-    `
-    )
-    .all({ sinceIso, maxRows }) as LatencyRow[];
+      LIMIT ?
+    `,
+    sinceIso,
+    maxRows
+  );
 
   const grouped = new Map<
     string,
@@ -886,17 +888,16 @@ export async function appendRequestLog({
  */
 export async function getRecentLogs(limit = 200) {
   try {
-    const db = getDbInstance();
-    const rows = db
-      .prepare(
-        `
+    const db = getDbClient();
+    const rows = await db.all<Record<string, unknown>>(
+      `
         SELECT timestamp, model, provider, account, tokens_in, tokens_out, status
         FROM call_logs
         ORDER BY timestamp DESC
         LIMIT ?
-      `
-      )
-      .all(limit) as Array<Record<string, unknown>>;
+      `,
+      limit
+    );
 
     return rows.map((row) => {
       const timestamp =

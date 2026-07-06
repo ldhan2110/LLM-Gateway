@@ -192,7 +192,7 @@ test("combo live test bypasses semantic cache and forces a fresh upstream reques
     1
   );
 
-  setCachedResponse(signature, "gpt-4.1", {
+  await setCachedResponse(signature, "gpt-4.1", {
     id: "chatcmpl-cached",
     choices: [
       {
@@ -242,7 +242,7 @@ test("combo live test bypasses semantic cache and forces a fresh upstream reques
     assert.match(fetchCalls[0].url, /\/chat\/completions$/);
     assert.equal(liveBody.choices[0].message.content, "LIVE");
   } finally {
-    invalidateBySignature(signature);
+    await invalidateBySignature(signature);
   }
 });
 

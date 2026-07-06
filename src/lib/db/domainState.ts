@@ -10,7 +10,7 @@
  * @module lib/db/domainState
  */
 
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 type JsonRecord = Record<string, unknown>;
 type BudgetResetInterval = "daily" | "weekly" | "monthly";
@@ -71,11 +71,11 @@ function toNumber(value: unknown, fallback = 0): number {
   return fallback;
 }
 
-function ensureBudgetSchema() {
+async function ensureBudgetSchema() {
   if (_budgetSchemaChecked) return;
 
-  const db = getDbInstance();
-  const columns = db.prepare("PRAGMA table_info(domain_budgets)").all();
+  const db = getDbClient();
+  const columns = await db.all<{ name?: string }>("PRAGMA table_info(domain_budgets)");
   const columnNames = new Set(
     columns
       .map((column) => {
@@ -86,28 +86,28 @@ function ensureBudgetSchema() {
   );
 
   if (!columnNames.has("weekly_limit_usd")) {
-    db.exec("ALTER TABLE domain_budgets ADD COLUMN weekly_limit_usd REAL DEFAULT 0");
+    await db.exec("ALTER TABLE domain_budgets ADD COLUMN weekly_limit_usd REAL DEFAULT 0");
   }
   if (!columnNames.has("reset_interval")) {
-    db.exec("ALTER TABLE domain_budgets ADD COLUMN reset_interval TEXT DEFAULT 'daily'");
+    await db.exec("ALTER TABLE domain_budgets ADD COLUMN reset_interval TEXT DEFAULT 'daily'");
   }
   if (!columnNames.has("reset_time")) {
-    db.exec("ALTER TABLE domain_budgets ADD COLUMN reset_time TEXT DEFAULT '00:00'");
+    await db.exec("ALTER TABLE domain_budgets ADD COLUMN reset_time TEXT DEFAULT '00:00'");
   }
   if (!columnNames.has("budget_reset_at")) {
-    db.exec("ALTER TABLE domain_budgets ADD COLUMN budget_reset_at INTEGER");
+    await db.exec("ALTER TABLE domain_budgets ADD COLUMN budget_reset_at INTEGER");
   }
   if (!columnNames.has("last_budget_reset_at")) {
-    db.exec("ALTER TABLE domain_budgets ADD COLUMN last_budget_reset_at INTEGER");
+    await db.exec("ALTER TABLE domain_budgets ADD COLUMN last_budget_reset_at INTEGER");
   }
   if (!columnNames.has("warning_emitted_at")) {
-    db.exec("ALTER TABLE domain_budgets ADD COLUMN warning_emitted_at INTEGER");
+    await db.exec("ALTER TABLE domain_budgets ADD COLUMN warning_emitted_at INTEGER");
   }
   if (!columnNames.has("warning_period_start")) {
-    db.exec("ALTER TABLE domain_budgets ADD COLUMN warning_period_start INTEGER");
+    await db.exec("ALTER TABLE domain_budgets ADD COLUMN warning_period_start INTEGER");
   }
 
-  db.exec(`
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS domain_budget_reset_logs (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       api_key_id TEXT NOT NULL,
@@ -132,9 +132,10 @@ function ensureBudgetSchema() {
  * @param {string} model
  * @param {Array<{provider: string, priority: number, enabled: boolean}>} chain
  */
-export function saveFallbackChain(model: string, chain: FallbackChainEntry[]) {
-  const db = getDbInstance();
-  db.prepare("INSERT OR REPLACE INTO domain_fallback_chains (model, chain) VALUES (?, ?)").run(
+export async function saveFallbackChain(model: string, chain: FallbackChainEntry[]) {
+  const db = getDbClient();
+  await db.run(
+    "INSERT OR REPLACE INTO domain_fallback_chains (model, chain) VALUES (?, ?)",
     model,
     JSON.stringify(chain)
   );
@@ -145,9 +146,9 @@ export function saveFallbackChain(model: string, chain: FallbackChainEntry[]) {
  * @param {string} model
  * @returns {Array<{provider: string, priority: number, enabled: boolean}> | null}
  */
-export function loadFallbackChain(model: string): FallbackChainEntry[] | null {
-  const db = getDbInstance();
-  const row = db.prepare("SELECT chain FROM domain_fallback_chains WHERE model = ?").get(model);
+export async function loadFallbackChain(model: string): Promise<FallbackChainEntry[] | null> {
+  const db = getDbClient();
+  const row = await db.get("SELECT chain FROM domain_fallback_chains WHERE model = ?", model);
   const chain = asRecord(row).chain;
   return typeof chain === "string" ? JSON.parse(chain) : null;
 }
@@ -156,9 +157,9 @@ export function loadFallbackChain(model: string): FallbackChainEntry[] | null {
  * Load all fallback chains.
  * @returns {Record<string, Array<{provider: string, priority: number, enabled: boolean}>>}
  */
-export function loadAllFallbackChains() {
-  const db = getDbInstance();
-  const rows = db.prepare("SELECT model, chain FROM domain_fallback_chains").all();
+export async function loadAllFallbackChains() {
+  const db = getDbClient();
+  const rows = await db.all("SELECT model, chain FROM domain_fallback_chains");
   const result: Record<string, unknown> = {};
   for (const row of rows) {
     const record = asRecord(row);
@@ -175,18 +176,18 @@ export function loadAllFallbackChains() {
  * @param {string} model
  * @returns {boolean}
  */
-export function deleteFallbackChain(model: string) {
-  const db = getDbInstance();
-  const info = db.prepare("DELETE FROM domain_fallback_chains WHERE model = ?").run(model);
+export async function deleteFallbackChain(model: string) {
+  const db = getDbClient();
+  const info = await db.run("DELETE FROM domain_fallback_chains WHERE model = ?", model);
   return info.changes > 0;
 }
 
 /**
  * Delete all fallback chains.
  */
-export function deleteAllFallbackChains() {
-  const db = getDbInstance();
-  db.prepare("DELETE FROM domain_fallback_chains").run();
+export async function deleteAllFallbackChains() {
+  const db = getDbClient();
+  await db.run("DELETE FROM domain_fallback_chains");
 }
 
 // ──────────────── Budgets ────────────────
@@ -196,10 +197,10 @@ export function deleteAllFallbackChains() {
  * @param {string} apiKeyId
  * @param {{ dailyLimitUsd: number, monthlyLimitUsd?: number, warningThreshold?: number }} config
  */
-export function saveBudget(apiKeyId: string, config: Partial<BudgetConfigRecord>) {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  db.prepare(
+export async function saveBudget(apiKeyId: string, config: Partial<BudgetConfigRecord>) {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  await db.run(
     `INSERT OR REPLACE INTO domain_budgets (
        api_key_id,
        daily_limit_usd,
@@ -213,8 +214,7 @@ export function saveBudget(apiKeyId: string, config: Partial<BudgetConfigRecord>
        warning_emitted_at,
        warning_period_start
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     apiKeyId,
     toNumber(config.dailyLimitUsd),
     toNumber(config.weeklyLimitUsd),
@@ -234,10 +234,10 @@ export function saveBudget(apiKeyId: string, config: Partial<BudgetConfigRecord>
  * @param {string} apiKeyId
  * @returns {{ dailyLimitUsd: number, monthlyLimitUsd: number, warningThreshold: number } | null}
  */
-export function loadBudget(apiKeyId: string): BudgetConfigRecord | null {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  const row = db.prepare("SELECT * FROM domain_budgets WHERE api_key_id = ?").get(apiKeyId);
+export async function loadBudget(apiKeyId: string): Promise<BudgetConfigRecord | null> {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  const row = await db.get("SELECT * FROM domain_budgets WHERE api_key_id = ?", apiKeyId);
   const record = asRecord(row);
   if (!row) return null;
   return {
@@ -261,10 +261,10 @@ export function loadBudget(apiKeyId: string): BudgetConfigRecord | null {
  * Load all budget configs.
  * @returns {Record<string, BudgetConfigRecord>}
  */
-export function loadAllBudgets() {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  const rows = db.prepare("SELECT * FROM domain_budgets ORDER BY api_key_id").all();
+export async function loadAllBudgets() {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  const rows = await db.all("SELECT * FROM domain_budgets ORDER BY api_key_id");
   const result: Record<string, BudgetConfigRecord> = {};
 
   for (const row of rows) {
@@ -296,14 +296,13 @@ export function loadAllBudgets() {
  * Persist a budget reset log entry.
  * @param {BudgetResetLogRecord} entry
  */
-export function saveBudgetResetLog(entry: BudgetResetLogRecord) {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  db.prepare(
+export async function saveBudgetResetLog(entry: BudgetResetLogRecord) {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  await db.run(
     `INSERT INTO domain_budget_reset_logs
        (api_key_id, reset_interval, previous_spend, reset_at, next_reset_at, period_start, period_end)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
     entry.apiKeyId,
     entry.resetInterval,
     entry.previousSpend,
@@ -320,18 +319,19 @@ export function saveBudgetResetLog(entry: BudgetResetLogRecord) {
  * @param {number} [limit=10]
  * @returns {Array<BudgetResetLogRecord & { id: number }>}
  */
-export function loadBudgetResetLogs(apiKeyId: string, limit = 10) {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  return db
-    .prepare(
-      `SELECT id, api_key_id, reset_interval, previous_spend, reset_at, next_reset_at, period_start, period_end
+export async function loadBudgetResetLogs(apiKeyId: string, limit = 10) {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  const rows = await db.all(
+    `SELECT id, api_key_id, reset_interval, previous_spend, reset_at, next_reset_at, period_start, period_end
        FROM domain_budget_reset_logs
        WHERE api_key_id = ?
        ORDER BY reset_at DESC
-       LIMIT ?`
-    )
-    .all(apiKeyId, Math.max(1, Math.floor(limit)))
+       LIMIT ?`,
+    apiKeyId,
+    Math.max(1, Math.floor(limit))
+  );
+  return rows
     .map((row) => {
       const record = asRecord(row);
       return {
@@ -355,11 +355,11 @@ export function loadBudgetResetLogs(apiKeyId: string, limit = 10) {
  * Delete a budget config.
  * @param {string} apiKeyId
  */
-export function deleteBudget(apiKeyId: string) {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  db.prepare("DELETE FROM domain_budgets WHERE api_key_id = ?").run(apiKeyId);
-  db.prepare("DELETE FROM domain_budget_reset_logs WHERE api_key_id = ?").run(apiKeyId);
+export async function deleteBudget(apiKeyId: string) {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  await db.run("DELETE FROM domain_budgets WHERE api_key_id = ?", apiKeyId);
+  await db.run("DELETE FROM domain_budget_reset_logs WHERE api_key_id = ?", apiKeyId);
 }
 
 // ──────────────── Cost History ────────────────
@@ -370,45 +370,44 @@ export function deleteBudget(apiKeyId: string) {
  * @param {number} cost
  * @param {number} [timestamp]
  */
-export function saveCostEntry(apiKeyId: string, cost: number, timestamp = Date.now()) {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  db.prepare("INSERT INTO domain_cost_history (api_key_id, cost, timestamp) VALUES (?, ?, ?)").run(
+export async function saveCostEntry(apiKeyId: string, cost: number, timestamp = Date.now()) {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  await db.run(
+    "INSERT INTO domain_cost_history (api_key_id, cost, timestamp) VALUES (?, ?, ?)",
     apiKeyId,
     cost,
     timestamp
   );
 }
 
-export function batchSaveCostEntries(
+export async function batchSaveCostEntries(
   entries: Array<{ apiKeyId: string; cost: number; timestamp: number }>
 ) {
-  ensureBudgetSchema();
+  await ensureBudgetSchema();
   if (!Array.isArray(entries) || entries.length === 0) return;
 
-  const db = getDbInstance();
-  const stmt = db.prepare(
-    "INSERT INTO domain_cost_history (api_key_id, cost, timestamp) VALUES (?, ?, ?)"
-  );
-  const tx = db.transaction(
-    (rows: Array<{ apiKeyId: string; cost: number; timestamp: number }>) => {
-      for (const entry of rows) {
-        stmt.run(entry.apiKeyId, entry.cost, entry.timestamp);
-      }
+  const db = getDbClient();
+  await db.transaction(async (c) => {
+    for (const entry of entries) {
+      await c.run(
+        "INSERT INTO domain_cost_history (api_key_id, cost, timestamp) VALUES (?, ?, ?)",
+        entry.apiKeyId,
+        entry.cost,
+        entry.timestamp
+      );
     }
-  );
-
-  tx(entries);
+  });
 }
 
-export function loadCostTotal(apiKeyId: string, sinceTimestamp: number) {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  const row = db
-    .prepare(
-      "SELECT COALESCE(SUM(cost), 0) AS total FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ?"
-    )
-    .get(apiKeyId, sinceTimestamp) as { total?: number } | undefined;
+export async function loadCostTotal(apiKeyId: string, sinceTimestamp: number) {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  const row = await db.get<{ total?: number }>(
+    "SELECT COALESCE(SUM(cost), 0) AS total FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ?",
+    apiKeyId,
+    sinceTimestamp
+  );
   return Number(row?.total || 0);
 }
 
@@ -418,14 +417,14 @@ export function loadCostTotal(apiKeyId: string, sinceTimestamp: number) {
  * @param {number} sinceTimestamp
  * @returns {Array<{cost: number, timestamp: number}>}
  */
-export function loadCostEntries(apiKeyId: string, sinceTimestamp: number) {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  return db
-    .prepare(
-      "SELECT cost, timestamp FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ? ORDER BY timestamp"
-    )
-    .all(apiKeyId, sinceTimestamp);
+export async function loadCostEntries(apiKeyId: string, sinceTimestamp: number) {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  return db.all(
+    "SELECT cost, timestamp FROM domain_cost_history WHERE api_key_id = ? AND timestamp >= ? ORDER BY timestamp",
+    apiKeyId,
+    sinceTimestamp
+  );
 }
 
 /**
@@ -435,21 +434,22 @@ export function loadCostEntries(apiKeyId: string, sinceTimestamp: number) {
  * @param {number} untilTimestamp
  * @returns {Array<{cost: number, timestamp: number}>}
  */
-export function loadCostEntriesInRange(
+export async function loadCostEntriesInRange(
   apiKeyId: string,
   sinceTimestamp: number,
   untilTimestamp: number
 ) {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  return db
-    .prepare(
-      `SELECT cost, timestamp
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  return db.all(
+    `SELECT cost, timestamp
        FROM domain_cost_history
        WHERE api_key_id = ? AND timestamp >= ? AND timestamp < ?
-       ORDER BY timestamp`
-    )
-    .all(apiKeyId, sinceTimestamp, untilTimestamp);
+       ORDER BY timestamp`,
+    apiKeyId,
+    sinceTimestamp,
+    untilTimestamp
+  );
 }
 
 /**
@@ -457,12 +457,13 @@ export function loadCostEntriesInRange(
  * @param {number} olderThanTimestamp
  * @returns {number} deleted count
  */
-export function cleanOldCostEntries(olderThanTimestamp: number) {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  const info = db
-    .prepare("DELETE FROM domain_cost_history WHERE timestamp < ?")
-    .run(olderThanTimestamp);
+export async function cleanOldCostEntries(olderThanTimestamp: number) {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  const info = await db.run(
+    "DELETE FROM domain_cost_history WHERE timestamp < ?",
+    olderThanTimestamp
+  );
   return info.changes;
 }
 
@@ -470,21 +471,21 @@ export function cleanOldCostEntries(olderThanTimestamp: number) {
  * Delete all cost data for an API key.
  * @param {string} apiKeyId
  */
-export function deleteCostEntries(apiKeyId: string) {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  db.prepare("DELETE FROM domain_cost_history WHERE api_key_id = ?").run(apiKeyId);
+export async function deleteCostEntries(apiKeyId: string) {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  await db.run("DELETE FROM domain_cost_history WHERE api_key_id = ?", apiKeyId);
 }
 
 /**
  * Delete all cost data.
  */
-export function deleteAllCostData() {
-  ensureBudgetSchema();
-  const db = getDbInstance();
-  db.prepare("DELETE FROM domain_cost_history").run();
-  db.prepare("DELETE FROM domain_budgets").run();
-  db.prepare("DELETE FROM domain_budget_reset_logs").run();
+export async function deleteAllCostData() {
+  await ensureBudgetSchema();
+  const db = getDbClient();
+  await db.run("DELETE FROM domain_cost_history");
+  await db.run("DELETE FROM domain_budgets");
+  await db.run("DELETE FROM domain_budget_reset_logs");
 }
 
 // ──────────────── Lockout State ────────────────
@@ -494,12 +495,15 @@ export function deleteAllCostData() {
  * @param {string} identifier
  * @param {{ attempts: number[], lockedUntil: number|null }} state
  */
-export function saveLockoutState(identifier: string, state: LockoutStateRecord) {
-  const db = getDbInstance();
-  db.prepare(
+export async function saveLockoutState(identifier: string, state: LockoutStateRecord) {
+  const db = getDbClient();
+  await db.run(
     `INSERT OR REPLACE INTO domain_lockout_state (identifier, attempts, locked_until)
-     VALUES (?, ?, ?)`
-  ).run(identifier, JSON.stringify(state.attempts), state.lockedUntil);
+     VALUES (?, ?, ?)`,
+    identifier,
+    JSON.stringify(state.attempts),
+    state.lockedUntil
+  );
 }
 
 /**
@@ -507,9 +511,12 @@ export function saveLockoutState(identifier: string, state: LockoutStateRecord) 
  * @param {string} identifier
  * @returns {{ attempts: number[], lockedUntil: number|null } | null}
  */
-export function loadLockoutState(identifier: string): LockoutStateRecord | null {
-  const db = getDbInstance();
-  const row = db.prepare("SELECT * FROM domain_lockout_state WHERE identifier = ?").get(identifier);
+export async function loadLockoutState(identifier: string): Promise<LockoutStateRecord | null> {
+  const db = getDbClient();
+  const row = await db.get(
+    "SELECT * FROM domain_lockout_state WHERE identifier = ?",
+    identifier
+  );
   if (!row) return null;
   const record = asRecord(row);
   const attemptsRaw = typeof record.attempts === "string" ? record.attempts : "[]";
@@ -524,23 +531,23 @@ export function loadLockoutState(identifier: string): LockoutStateRecord | null 
  * Delete lockout state for an identifier.
  * @param {string} identifier
  */
-export function deleteLockoutState(identifier: string) {
-  const db = getDbInstance();
-  db.prepare("DELETE FROM domain_lockout_state WHERE identifier = ?").run(identifier);
+export async function deleteLockoutState(identifier: string) {
+  const db = getDbClient();
+  await db.run("DELETE FROM domain_lockout_state WHERE identifier = ?", identifier);
 }
 
 /**
  * Get all locked identifiers.
  * @returns {Array<{identifier: string, lockedUntil: number}>}
  */
-export function loadAllLockedIdentifiers() {
-  const db = getDbInstance();
+export async function loadAllLockedIdentifiers() {
+  const db = getDbClient();
   const now = Date.now();
-  return db
-    .prepare(
-      "SELECT identifier, locked_until FROM domain_lockout_state WHERE locked_until IS NOT NULL AND locked_until > ?"
-    )
-    .all(now)
+  const rows = await db.all(
+    "SELECT identifier, locked_until FROM domain_lockout_state WHERE locked_until IS NOT NULL AND locked_until > ?",
+    now
+  );
+  return rows
     .map((row) => {
       const record = asRecord(row);
       return {
@@ -558,12 +565,14 @@ export function loadAllLockedIdentifiers() {
  * @param {string} name
  * @param {{ state: string, failureCount: number, lastFailureTime: number|null, options?: object }} cbState
  */
-export function saveCircuitBreakerState(name: string, cbState: CircuitBreakerStateRecord) {
-  const db = getDbInstance();
-  db.prepare(
+export async function saveCircuitBreakerState(
+  name: string,
+  cbState: CircuitBreakerStateRecord
+) {
+  const db = getDbClient();
+  await db.run(
     `INSERT OR REPLACE INTO domain_circuit_breakers (name, state, failure_count, last_failure_time, options)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(
+     VALUES (?, ?, ?, ?, ?)`,
     name,
     cbState.state,
     cbState.failureCount,
@@ -577,9 +586,11 @@ export function saveCircuitBreakerState(name: string, cbState: CircuitBreakerSta
  * @param {string} name
  * @returns {{ state: string, failureCount: number, lastFailureTime: number|null, options?: object } | null}
  */
-export function loadCircuitBreakerState(name: string): CircuitBreakerStateRecord | null {
-  const db = getDbInstance();
-  const row = db.prepare("SELECT * FROM domain_circuit_breakers WHERE name = ?").get(name);
+export async function loadCircuitBreakerState(
+  name: string
+): Promise<CircuitBreakerStateRecord | null> {
+  const db = getDbClient();
+  const row = await db.get("SELECT * FROM domain_circuit_breakers WHERE name = ?", name);
   if (!row) return null;
   const record = asRecord(row);
   const options = typeof record.options === "string" ? JSON.parse(record.options) : null;
@@ -595,11 +606,12 @@ export function loadCircuitBreakerState(name: string): CircuitBreakerStateRecord
  * Load all circuit breaker states.
  * @returns {Array<{name: string, state: string, failureCount: number, lastFailureTime: number|null}>}
  */
-export function loadAllCircuitBreakerStates() {
-  const db = getDbInstance();
-  return db
-    .prepare("SELECT name, state, failure_count, last_failure_time FROM domain_circuit_breakers")
-    .all()
+export async function loadAllCircuitBreakerStates() {
+  const db = getDbClient();
+  const rows = await db.all(
+    "SELECT name, state, failure_count, last_failure_time FROM domain_circuit_breakers"
+  );
+  return rows
     .map((row) => {
       const record = asRecord(row);
       return {
@@ -616,15 +628,15 @@ export function loadAllCircuitBreakerStates() {
  * Delete a circuit breaker state.
  * @param {string} name
  */
-export function deleteCircuitBreakerState(name: string) {
-  const db = getDbInstance();
-  db.prepare("DELETE FROM domain_circuit_breakers WHERE name = ?").run(name);
+export async function deleteCircuitBreakerState(name: string) {
+  const db = getDbClient();
+  await db.run("DELETE FROM domain_circuit_breakers WHERE name = ?", name);
 }
 
 /**
  * Delete all circuit breaker states.
  */
-export function deleteAllCircuitBreakerStates() {
-  const db = getDbInstance();
-  db.prepare("DELETE FROM domain_circuit_breakers").run();
+export async function deleteAllCircuitBreakerStates() {
+  const db = getDbClient();
+  await db.run("DELETE FROM domain_circuit_breakers");
 }

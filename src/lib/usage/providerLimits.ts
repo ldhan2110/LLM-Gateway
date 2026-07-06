@@ -645,14 +645,14 @@ async function setLastProviderLimitsAutoSyncTime(timestamp: string): Promise<voi
   await updateSettings({ [PROVIDER_LIMITS_AUTO_SYNC_SETTING_KEY]: timestamp });
 }
 
-export function getCachedProviderLimitsMap(): Record<string, ProviderLimitsCacheEntry> {
+export async function getCachedProviderLimitsMap(): Promise<Record<string, ProviderLimitsCacheEntry>> {
   return getAllProviderLimitsCache();
 }
 
 export async function getSanitizedCachedProviderLimitsMap(): Promise<
   Record<string, ProviderLimitsCacheEntry>
 > {
-  const caches = getAllProviderLimitsCache();
+  const caches = await getAllProviderLimitsCache();
   // Sanitization only rewrites Antigravity/agy quota keys; every other provider's cache
   // entry is returned untouched (see sanitizeProviderLimitsCacheForConnection). The
   // dashboard polls this on an auto-refresh interval, so avoid the unconditional
@@ -874,7 +874,7 @@ export async function fetchAndPersistProviderLimits(
   // Serve the prior entry instead; only successful fetches update the cache.
   const fetchFailed = !newCache.quotas && newCache.message;
   if (fetchFailed) {
-    const previous = getProviderLimitsCache(connectionId);
+    const previous = await getProviderLimitsCache(connectionId);
     if (previous?.quotas && Object.keys(previous.quotas).length > 0) {
       // utils.tsx parseQuotaData ignores `quotas` if `message` is set — drop
       // the message so the prior quotas render; surface staleness via _stale.
@@ -893,7 +893,7 @@ export async function fetchAndPersistProviderLimits(
     return { connection, usage, cache: newCache };
   }
 
-  setProviderLimitsCache(connectionId, newCache);
+  await setProviderLimitsCache(connectionId, newCache);
   return { connection, usage, cache: newCache };
 }
 
@@ -917,7 +917,7 @@ export async function syncAllProviderLimits(
   const caches: Record<string, ProviderLimitsCacheEntry> = {};
   const errors: Record<string, string> = {};
 
-  const recordResult = (
+  const recordResult = async (
     connectionId: string,
     result: PromiseSettledResult<{ connectionId: string; cache: ProviderLimitsCacheEntry }>
   ) => {
@@ -925,7 +925,7 @@ export async function syncAllProviderLimits(
       const { cache } = result.value;
       // Don't persist error-only entries; show prior cache or pass through.
       if (!cache.quotas && cache.message) {
-        const previous = getProviderLimitsCache(connectionId);
+        const previous = await getProviderLimitsCache(connectionId);
         if (previous?.quotas && Object.keys(previous.quotas).length > 0) {
           caches[connectionId] = previous;
         } else {
@@ -942,7 +942,7 @@ export async function syncAllProviderLimits(
   };
 
   const fetchOne = async (connection: ProviderConnectionLike) => {
-    const existingCache = getProviderLimitsCache(connection.id);
+    const existingCache = await getProviderLimitsCache(connection.id);
     const forceRefresh =
       source === "manual" ||
       shouldRefreshProviderLimitsCache(connection, existingCache || undefined);
@@ -964,23 +964,23 @@ export async function syncAllProviderLimits(
   for (let i = 0; i < otherConnections.length; i += concurrency) {
     const chunk = otherConnections.slice(i, i + concurrency);
     const results = await Promise.allSettled(chunk.map(fetchOne));
-    results.forEach((result, index) => {
-      const connectionId = chunk[index]?.id;
-      if (connectionId) recordResult(connectionId, result);
-    });
+    for (let j = 0; j < results.length; j++) {
+      const connectionId = chunk[j]?.id;
+      if (connectionId) await recordResult(connectionId, results[j]);
+    }
   }
 
   for (let i = 0; i < oauthConnections.length; i++) {
     const connection = oauthConnections[i];
     const [result] = await Promise.allSettled([fetchOne(connection)]);
-    recordResult(connection.id, result);
+    await recordResult(connection.id, result);
     if (spacingMs > 0 && i < oauthConnections.length - 1) {
       await syncDelay(spacingMs);
     }
   }
 
   if (cacheEntries.length > 0) {
-    setProviderLimitsCacheBatch(cacheEntries);
+    await setProviderLimitsCacheBatch(cacheEntries);
   }
 
   if (source === "scheduled") {

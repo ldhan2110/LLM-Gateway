@@ -2,8 +2,8 @@ import { z } from "zod";
 import { createNotionClient } from "../../../src/lib/notion/api.ts";
 import { getNotionToken } from "../../../src/lib/db/notion.ts";
 
-function requireToken(): string {
-  const token = getNotionToken();
+async function requireToken(): Promise<string> {
+  const token = await getNotionToken();
   if (!token) throw new Error("Notion integration token not configured. Set it in Settings > Context Sources.");
   return token;
 }
@@ -19,7 +19,7 @@ export const notionTools = [
       startCursor: z.string().optional().describe("Pagination cursor"),
     }),
     handler: async (args: { query: string; pageSize?: number; startCursor?: string }) => {
-      const client = createNotionClient(requireToken());
+      const client = createNotionClient(await requireToken());
       return client.searchPagesAndDatabases(args.query, args.startCursor, args.pageSize);
     },
   },
@@ -31,7 +31,7 @@ export const notionTools = [
       pageId: z.string().min(1).describe("Notion page ID (32-char hex or UUID)"),
     }),
     handler: async (args: { pageId: string }) => {
-      const client = createNotionClient(requireToken());
+      const client = createNotionClient(await requireToken());
       return client.getPage(args.pageId);
     },
   },
@@ -45,7 +45,7 @@ export const notionTools = [
       startCursor: z.string().optional().describe("Pagination cursor"),
     }),
     handler: async (args: { blockId: string; pageSize?: number; startCursor?: string }) => {
-      const client = createNotionClient(requireToken());
+      const client = createNotionClient(await requireToken());
       return client.listBlockChildren(args.blockId, args.startCursor, args.pageSize);
     },
   },
@@ -67,7 +67,7 @@ export const notionTools = [
       pageSize?: number;
       startCursor?: string;
     }) => {
-      const client = createNotionClient(requireToken());
+      const client = createNotionClient(await requireToken());
       return client.queryDatabase(
         args.databaseId,
         args.filter,
@@ -85,7 +85,7 @@ export const notionTools = [
       databaseId: z.string().min(1).describe("Notion database ID (32-char hex or UUID)"),
     }),
     handler: async (args: { databaseId: string }) => {
-      const client = createNotionClient(requireToken());
+      const client = createNotionClient(await requireToken());
       return client.getDatabase(args.databaseId);
     },
   },
@@ -99,7 +99,7 @@ export const notionTools = [
       after: z.string().optional().describe("Block ID to append after (position parameter)"),
     }),
     handler: async (args: { blockId: string; children: unknown[]; after?: string }) => {
-      const client = createNotionClient(requireToken());
+      const client = createNotionClient(await requireToken());
       return client.appendBlocks(args.blockId, args.children, args.after);
     },
   },

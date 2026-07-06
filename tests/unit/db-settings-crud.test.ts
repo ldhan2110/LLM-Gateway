@@ -206,7 +206,7 @@ test("LKGP values can be set, read and cleared", async () => {
   assert.deepEqual(await settingsDb.getLKGP("combo-a", "model-a"), { provider: "openai" });
   assert.deepEqual(await settingsDb.getLKGP("combo-a", "model-b"), { provider: "anthropic" });
 
-  settingsDb.clearAllLKGP();
+  await settingsDb.clearAllLKGP();
 
   assert.equal(await settingsDb.getLKGP("combo-a", "model-a"), null);
 });

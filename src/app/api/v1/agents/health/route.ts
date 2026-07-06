@@ -30,7 +30,7 @@ async function checkProviderHealth(providerId: string): Promise<ProviderHealth> 
     return { id: providerId, name, connected: false, latencyMs: 0, error: "Unknown provider" };
   }
 
-  const credentials = getCloudAgentCredentialFromDb(providerId);
+  const credentials = await getCloudAgentCredentialFromDb(providerId);
   if (!credentials) {
     return {
       id: providerId,

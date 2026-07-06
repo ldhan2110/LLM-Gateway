@@ -1,4 +1,4 @@
-import { getDbInstance } from "@/lib/db/core";
+import { getDbClient } from "@/lib/db/core";
 import type { ProviderLimitsCacheEntry } from "@/lib/db/providerLimits";
 import { getProviderQuotaWindowStartIso } from "@/lib/db/quotaResetEvents";
 import { calculateCost } from "./costCalculator";
@@ -35,8 +35,8 @@ export interface ApiKeyUsageLimitDeps {
   now?: () => number;
   getProviderConnectionById?: (connectionId: string) => Promise<unknown>;
   getProviderConnections?: (filter?: Record<string, unknown>) => Promise<unknown[]>;
-  getProviderLimitsCache?: (connectionId: string) => ProviderLimitsCacheEntry | null;
-  getAllProviderLimitsCache?: () => Record<string, ProviderLimitsCacheEntry>;
+  getProviderLimitsCache?: (connectionId: string) => Promise<ProviderLimitsCacheEntry | null>;
+  getAllProviderLimitsCache?: () => Promise<Record<string, ProviderLimitsCacheEntry>>;
 }
 
 interface UsageCostRow {
@@ -224,30 +224,35 @@ function isWeeklyQuotaResetSnapshot(row: QuotaSnapshotRow, targetResetAtIso: str
   return resetDay(row.nextResetAt) === targetDay;
 }
 
-function getObservedWeeklyWindowStartIso(
+async function getObservedWeeklyWindowStartIso(
   connectionId: string,
   targetResetAtIso: string,
   nowMs: number
-): string | null {
+): Promise<string | null> {
   if (!connectionId || !targetResetAtIso) return null;
 
   try {
-    const rows = getDbInstance()
-      .prepare(
-        `
+    const db = getDbClient();
+    const nowIso = new Date(nowMs).toISOString();
+    // Note: getObservedWeeklyWindowStartIso is called from a sync context; we wrap in a
+    // fire-and-forget async IIFE upstream, but here we need to make it async properly.
+    // This function is already wrapped in try/catch and returns null on failure.
+    const rows = await db.all<QuotaSnapshotRow>(
+      `
         SELECT
           remaining_percentage as remainingPercentage,
           next_reset_at as nextResetAt,
           created_at as createdAt
         FROM quota_snapshots
-        WHERE connection_id = @connectionId
+        WHERE connection_id = ?
           AND LOWER(window_key) LIKE '%weekly%'
           AND LOWER(window_key) NOT LIKE '%sonnet%'
-          AND created_at <= @nowIso
+          AND created_at <= ?
         ORDER BY created_at ASC, id ASC
-      `
-      )
-      .all({ connectionId, nowIso: new Date(nowMs).toISOString() }) as QuotaSnapshotRow[];
+      `,
+      connectionId,
+      nowIso
+    );
 
     let observedStartIso: string | null = null;
     let previousUsedPercent: number | null = null;
@@ -279,14 +284,14 @@ function getObservedWeeklyWindowStartIso(
 // Prefer the persisted, provider-observed window start (recorded by
 // quotaResetEvents on real reset transitions); fall back to inferring it from
 // historical snapshots when no observed event is available yet.
-function getWeeklyWindowStartIso(
+async function getWeeklyWindowStartIso(
   connectionId: string,
   targetResetAtIso: string,
   nowMs: number
-): string | null {
+): Promise<string | null> {
   return (
-    getProviderQuotaWindowStartIso(connectionId, targetResetAtIso, nowMs) ??
-    getObservedWeeklyWindowStartIso(connectionId, targetResetAtIso, nowMs)
+    (await getProviderQuotaWindowStartIso(connectionId, targetResetAtIso, nowMs)) ??
+    (await getObservedWeeklyWindowStartIso(connectionId, targetResetAtIso, nowMs))
   );
 }
 
@@ -326,7 +331,7 @@ async function getProviderWeeklyWindow(
       const connection = connectionFromValue(await deps.getProviderConnectionById(connectionId));
       if (!connection) continue;
       const resetAt = findWeeklyQuotaResetAt(
-        deps.getProviderLimitsCache(connection.id)?.quotas,
+        (await deps.getProviderLimitsCache(connection.id))?.quotas,
         nowMs
       );
       if (resetAt) {
@@ -334,12 +339,12 @@ async function getProviderWeeklyWindow(
           connectionId: connection.id,
           provider: connection.provider,
           resetAtIso: resetAt,
-          observedWindowStartIso: getWeeklyWindowStartIso(connection.id, resetAt, nowMs),
+          observedWindowStartIso: await getWeeklyWindowStartIso(connection.id, resetAt, nowMs),
         });
       }
     }
   } else {
-    const caches = deps.getAllProviderLimitsCache();
+    const caches = await deps.getAllProviderLimitsCache();
     const connections = await deps.getProviderConnections({ isActive: true });
     for (const rawConnection of connections) {
       const connection = connectionFromValue(rawConnection);
@@ -350,7 +355,7 @@ async function getProviderWeeklyWindow(
           connectionId: connection.id,
           provider: connection.provider,
           resetAtIso: resetAt,
-          observedWindowStartIso: getWeeklyWindowStartIso(connection.id, resetAt, nowMs),
+          observedWindowStartIso: await getWeeklyWindowStartIso(connection.id, resetAt, nowMs),
         });
       }
     }
@@ -375,10 +380,9 @@ async function getProviderWeeklyWindow(
 
 async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promise<number> {
   if (!apiKeyId) return 0;
-  const db = getDbInstance();
-  const rows = db
-    .prepare(
-      `
+  const db = getDbClient();
+  const rows = await db.all<UsageCostRow>(
+    `
       SELECT
         LOWER(provider) as provider,
         LOWER(model) as model,
@@ -389,13 +393,14 @@ async function getApiKeyUsdSpendSince(apiKeyId: string, sinceIso: string): Promi
         COALESCE(SUM(tokens_cache_creation), 0) as cacheCreationTokens,
         COALESCE(SUM(tokens_reasoning), 0) as reasoningTokens
       FROM usage_history
-      WHERE api_key_id = @apiKeyId
-        AND timestamp >= @sinceIso
+      WHERE api_key_id = ?
+        AND timestamp >= ?
         AND success = 1
       GROUP BY LOWER(provider), LOWER(model), serviceTier
-    `
-    )
-    .all({ apiKeyId, sinceIso }) as UsageCostRow[];
+    `,
+    apiKeyId,
+    sinceIso
+  );
 
   let total = 0;
   for (const row of rows) {

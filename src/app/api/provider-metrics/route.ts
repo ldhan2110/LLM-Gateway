@@ -22,7 +22,7 @@ function toNumber(value: unknown): number {
  */
 export async function GET() {
   try {
-    const rows = getProviderMetrics();
+    const rows = await getProviderMetrics();
 
     const metrics: Record<
       string,

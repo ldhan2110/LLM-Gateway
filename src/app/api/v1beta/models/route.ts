@@ -51,7 +51,7 @@ export async function OPTIONS() {
  */
 export async function GET() {
   try {
-    getSyncedCapabilities();
+    getSyncedCapabilities().catch(() => undefined); // warm cache, fire-and-forget
     const models = [];
     const existingNames = new Set<string>();
 

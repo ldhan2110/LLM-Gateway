@@ -1,4 +1,4 @@
-import { getDbInstance } from "@/lib/db/core.ts";
+import { getDbClient } from "@/lib/db/core";
 
 export interface CloudAgentTaskRow {
   id: string;
@@ -16,10 +16,10 @@ export interface CloudAgentTaskRow {
   completed_at: string | null;
 }
 
-export function createCloudAgentTaskTable(): void {
-  const db = getDbInstance();
+export async function createCloudAgentTaskTable(): Promise<void> {
+  const db = getDbClient();
 
-  db.exec(`
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS cloud_agent_tasks (
       id TEXT PRIMARY KEY,
       provider_id TEXT NOT NULL,
@@ -37,35 +37,48 @@ export function createCloudAgentTaskTable(): void {
     )
   `);
 
-  db.exec(`
+  await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_cloud_agent_tasks_provider
     ON cloud_agent_tasks(provider_id)
   `);
 
-  db.exec(`
+  await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_cloud_agent_tasks_status
     ON cloud_agent_tasks(status)
   `);
 
-  db.exec(`
+  await db.exec(`
     CREATE INDEX IF NOT EXISTS idx_cloud_agent_tasks_created
     ON cloud_agent_tasks(created_at DESC)
   `);
 }
 
-export function insertCloudAgentTask(task: CloudAgentTaskRow): void {
-  const db = getDbInstance();
-  db.prepare(
+export async function insertCloudAgentTask(task: CloudAgentTaskRow): Promise<void> {
+  const db = getDbClient();
+  await db.run(
     `
     INSERT INTO cloud_agent_tasks (
       id, provider_id, external_id, status, prompt, source,
       options, result, activities, error, created_at, updated_at, completed_at
     ) VALUES (
-      @id, @provider_id, @external_id, @status, @prompt, @source,
-      @options, @result, @activities, @error, @created_at, @updated_at, @completed_at
+      ?, ?, ?, ?, ?, ?,
+      ?, ?, ?, ?, ?, ?, ?
     )
-  `
-  ).run(task);
+  `,
+    task.id,
+    task.provider_id,
+    task.external_id,
+    task.status,
+    task.prompt,
+    task.source,
+    task.options,
+    task.result,
+    task.activities,
+    task.error,
+    task.created_at,
+    task.updated_at,
+    task.completed_at
+  );
 }
 
 // Whitelist of allowed columns for update operations
@@ -80,11 +93,11 @@ const ALLOWED_UPDATE_COLUMNS = new Set([
   "completed_at",
 ]);
 
-export function updateCloudAgentTask(
+export async function updateCloudAgentTask(
   id: string,
   updates: Partial<Omit<CloudAgentTaskRow, "id">>
-): void {
-  const db = getDbInstance();
+): Promise<void> {
+  const db = getDbClient();
 
   // Validate keys against whitelist to prevent SQL injection
   const validUpdates: Partial<Omit<CloudAgentTaskRow, "id">> = {};
@@ -94,52 +107,65 @@ export function updateCloudAgentTask(
     }
   }
 
-  const fields = Object.keys(validUpdates)
-    .map((key) => `${key} = @${key}`)
-    .join(", ");
+  const keys = Object.keys(validUpdates);
+  if (!keys.length) return; // No valid updates
 
-  if (!fields) return; // No valid updates
+  const fields = keys.map((key) => `${key} = ?`).join(", ");
+  const values = keys.map((key) => (validUpdates as Record<string, unknown>)[key]);
 
-  db.prepare(
+  await db.run(
     `
     UPDATE cloud_agent_tasks
     SET ${fields}, updated_at = datetime('now')
-    WHERE id = @id
-  `
-  ).run({ id, ...validUpdates });
+    WHERE id = ?
+  `,
+    ...values,
+    id
+  );
 }
 
-export function getCloudAgentTaskById(id: string): CloudAgentTaskRow | null {
-  const db = getDbInstance();
-  return db
-    .prepare("SELECT * FROM cloud_agent_tasks WHERE id = ?")
-    .get(id) as CloudAgentTaskRow | null;
+export async function getCloudAgentTaskById(id: string): Promise<CloudAgentTaskRow | null> {
+  const db = getDbClient();
+  const row = await db.get<CloudAgentTaskRow>(
+    "SELECT * FROM cloud_agent_tasks WHERE id = ?",
+    id
+  );
+  return row ?? null;
 }
 
-export function getCloudAgentTasksByProvider(providerId: string, limit = 50): CloudAgentTaskRow[] {
-  const db = getDbInstance();
-  return db
-    .prepare(
-      "SELECT * FROM cloud_agent_tasks WHERE provider_id = ? ORDER BY created_at DESC LIMIT ?"
-    )
-    .all(providerId, limit) as CloudAgentTaskRow[];
+export async function getCloudAgentTasksByProvider(
+  providerId: string,
+  limit = 50
+): Promise<CloudAgentTaskRow[]> {
+  const db = getDbClient();
+  return db.all<CloudAgentTaskRow>(
+    "SELECT * FROM cloud_agent_tasks WHERE provider_id = ? ORDER BY created_at DESC LIMIT ?",
+    providerId,
+    limit
+  );
 }
 
-export function getCloudAgentTasksByStatus(status: string, limit = 50): CloudAgentTaskRow[] {
-  const db = getDbInstance();
-  return db
-    .prepare("SELECT * FROM cloud_agent_tasks WHERE status = ? ORDER BY created_at DESC LIMIT ?")
-    .all(status, limit) as CloudAgentTaskRow[];
+export async function getCloudAgentTasksByStatus(
+  status: string,
+  limit = 50
+): Promise<CloudAgentTaskRow[]> {
+  const db = getDbClient();
+  return db.all<CloudAgentTaskRow>(
+    "SELECT * FROM cloud_agent_tasks WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+    status,
+    limit
+  );
 }
 
-export function getAllCloudAgentTasks(limit = 100): CloudAgentTaskRow[] {
-  const db = getDbInstance();
-  return db
-    .prepare("SELECT * FROM cloud_agent_tasks ORDER BY created_at DESC LIMIT ?")
-    .all(limit) as CloudAgentTaskRow[];
+export async function getAllCloudAgentTasks(limit = 100): Promise<CloudAgentTaskRow[]> {
+  const db = getDbClient();
+  return db.all<CloudAgentTaskRow>(
+    "SELECT * FROM cloud_agent_tasks ORDER BY created_at DESC LIMIT ?",
+    limit
+  );
 }
 
-export function deleteCloudAgentTask(id: string): void {
-  const db = getDbInstance();
-  db.prepare("DELETE FROM cloud_agent_tasks WHERE id = ?").run(id);
+export async function deleteCloudAgentTask(id: string): Promise<void> {
+  const db = getDbClient();
+  await db.run("DELETE FROM cloud_agent_tasks WHERE id = ?", id);
 }

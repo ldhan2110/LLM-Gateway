@@ -9,7 +9,7 @@
  * See `_tasks/features-v3.8.42/gaps/DISCOVERY_TOOL_DESIGN.md` for the design.
  */
 
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 export type DiscoveryMethod =
   | "free_tier"
@@ -86,13 +86,13 @@ function rowToResult(row: DiscoveryRow): DiscoveryResult {
  * re-discovering the same endpoint updates the existing row rather than
  * duplicating it. Returns the persisted row (with its id).
  */
-export function upsertDiscoveryResult(result: DiscoveryResult): DiscoveryResult {
-  const db = getDbInstance();
+export async function upsertDiscoveryResult(result: DiscoveryResult): Promise<DiscoveryResult> {
+  const db = getDbClient();
   const models = result.models ? JSON.stringify(result.models) : null;
-  db.prepare(
+  await db.run(
     `INSERT INTO discovery_results
        (provider_id, method, endpoint, auth_type, models, rate_limit, feasibility, risk_level, status, notes)
-     VALUES (@provider_id, @method, @endpoint, @auth_type, @models, @rate_limit, @feasibility, @risk_level, @status, @notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(provider_id, method, endpoint) DO UPDATE SET
        auth_type = excluded.auth_type,
        models = excluded.models,
@@ -100,26 +100,26 @@ export function upsertDiscoveryResult(result: DiscoveryResult): DiscoveryResult 
        feasibility = excluded.feasibility,
        risk_level = excluded.risk_level,
        status = excluded.status,
-       notes = excluded.notes`
-  ).run({
-    provider_id: result.providerId,
-    method: result.method,
-    endpoint: result.endpoint ?? null,
-    auth_type: result.authType,
+       notes = excluded.notes`,
+    result.providerId,
+    result.method,
+    result.endpoint ?? null,
+    result.authType,
     models,
-    rate_limit: result.rateLimit ?? null,
-    feasibility: result.feasibility,
-    risk_level: result.riskLevel,
-    status: result.status,
-    notes: result.notes ?? null,
-  });
+    result.rateLimit ?? null,
+    result.feasibility,
+    result.riskLevel,
+    result.status,
+    result.notes ?? null
+  );
 
-  const row = db
-    .prepare(
-      `SELECT * FROM discovery_results
-       WHERE provider_id = ? AND method = ? AND ifnull(endpoint, '') = ifnull(?, '')`
-    )
-    .get(result.providerId, result.method, result.endpoint ?? null) as DiscoveryRow | undefined;
+  const row = await db.get<DiscoveryRow>(
+    `SELECT * FROM discovery_results
+       WHERE provider_id = ? AND method = ? AND ifnull(endpoint, '') = ifnull(?, '')`,
+    result.providerId,
+    result.method,
+    result.endpoint ?? null
+  );
   // The row was just written, so it must exist.
   return rowToResult(row!);
 }
@@ -128,25 +128,22 @@ export function upsertDiscoveryResult(result: DiscoveryResult): DiscoveryResult 
  * List discovery results, optionally filtered to a single provider. Newest
  * findings first.
  */
-export function getDiscoveryResults(providerId?: string): DiscoveryResult[] {
-  const db = getDbInstance();
+export async function getDiscoveryResults(providerId?: string): Promise<DiscoveryResult[]> {
+  const db = getDbClient();
   const rows = providerId
-    ? (db
-        .prepare(
-          "SELECT * FROM discovery_results WHERE provider_id = ? ORDER BY discovered_at DESC, id DESC"
-        )
-        .all(providerId) as DiscoveryRow[])
-    : (db
-        .prepare("SELECT * FROM discovery_results ORDER BY discovered_at DESC, id DESC")
-        .all() as DiscoveryRow[]);
+    ? await db.all<DiscoveryRow>(
+        "SELECT * FROM discovery_results WHERE provider_id = ? ORDER BY discovered_at DESC, id DESC",
+        providerId
+      )
+    : await db.all<DiscoveryRow>(
+        "SELECT * FROM discovery_results ORDER BY discovered_at DESC, id DESC"
+      );
   return rows.map(rowToResult);
 }
 
-export function getDiscoveryResultById(id: number): DiscoveryResult | null {
-  const db = getDbInstance();
-  const row = db.prepare("SELECT * FROM discovery_results WHERE id = ?").get(id) as
-    | DiscoveryRow
-    | undefined;
+export async function getDiscoveryResultById(id: number): Promise<DiscoveryResult | null> {
+  const db = getDbClient();
+  const row = await db.get<DiscoveryRow>("SELECT * FROM discovery_results WHERE id = ?", id);
   return row ? rowToResult(row) : null;
 }
 
@@ -154,13 +151,12 @@ export function getDiscoveryResultById(id: number): DiscoveryResult | null {
  * Mark a finding as verified, stamping `verified_at`. Returns the updated row,
  * or null if no row with that id exists.
  */
-export function markVerified(id: number): DiscoveryResult | null {
-  const db = getDbInstance();
-  const info = db
-    .prepare(
-      "UPDATE discovery_results SET status = 'verified', verified_at = datetime('now') WHERE id = ?"
-    )
-    .run(id);
+export async function markVerified(id: number): Promise<DiscoveryResult | null> {
+  const db = getDbClient();
+  const info = await db.run(
+    "UPDATE discovery_results SET status = 'verified', verified_at = datetime('now') WHERE id = ?",
+    id
+  );
   if (info.changes === 0) return null;
   return getDiscoveryResultById(id);
 }
@@ -169,8 +165,8 @@ export function markVerified(id: number): DiscoveryResult | null {
  * Delete a finding. Returns true if a row was removed, false if the id was not
  * found.
  */
-export function deleteDiscoveryResult(id: number): boolean {
-  const db = getDbInstance();
-  const info = db.prepare("DELETE FROM discovery_results WHERE id = ?").run(id);
+export async function deleteDiscoveryResult(id: number): Promise<boolean> {
+  const db = getDbClient();
+  const info = await db.run("DELETE FROM discovery_results WHERE id = ?", id);
   return info.changes > 0;
 }

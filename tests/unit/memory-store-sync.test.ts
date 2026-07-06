@@ -198,7 +198,7 @@ test("updateMemory() metadata-only change does NOT mark needs_reindex (content u
 
   // Clear any reindex flags from createMemory
   await drainSetImmediate();
-  memoryVec.markMemoryNeedsReindex(created.id, false);
+  await memoryVec.markMemoryNeedsReindex(created.id, false);
 
   const ok = await store.updateMemory(created.id, { metadata: { updated: true } });
   assert.equal(ok, true);
@@ -206,7 +206,7 @@ test("updateMemory() metadata-only change does NOT mark needs_reindex (content u
   // No content/key change → scheduleVectorUpsert NOT called
   await drainSetImmediate();
 
-  const pending = memoryVec.getMemoryReindexQueue(100);
+  const pending = await memoryVec.getMemoryReindexQueue(100);
   const inQueue = pending.some((item) => item.id === created.id);
   assert.equal(
     inQueue,
@@ -215,8 +215,8 @@ test("updateMemory() metadata-only change does NOT mark needs_reindex (content u
   );
 });
 
-test("getMemoryTokensUsed() returns 0 for empty DB", () => {
-  const tokens = store.getMemoryTokensUsed("unknown-key");
+test("getMemoryTokensUsed() returns 0 for empty DB", async () => {
+  const tokens = await store.getMemoryTokensUsed("unknown-key");
   assert.equal(tokens, 0);
 });
 
@@ -231,7 +231,7 @@ test("getMemoryTokensUsed() returns correct estimate after createMemory", async 
     expiresAt: null,
   });
 
-  const tokens = store.getMemoryTokensUsed("key-f");
+  const tokens = await store.getMemoryTokensUsed("key-f");
   assert.ok(tokens > 0, "token estimate should be > 0 after storing memory");
   assert.equal(tokens, Math.ceil("Hello World".length / 4));
 });

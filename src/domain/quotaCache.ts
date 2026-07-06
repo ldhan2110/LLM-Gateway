@@ -22,6 +22,7 @@ import {
   cleanupOldSnapshots,
   getLatestQuotaSnapshotsForConnection,
 } from "@/lib/db/quotaSnapshots";
+import type { QuotaSnapshotRow } from "@/shared/types/utilization";
 import { recordProviderQuotaResetEventIfChanged } from "@/lib/db/quotaResetEvents";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -243,6 +244,8 @@ export function setQuotaCache(
               remainingPercentage: prior.quotas[windowKey].remainingPercentage,
             }
           : null,
+      }).catch((err) => {
+        console.error("[quotaCache] Failed to record quota reset event:", err);
       });
       // #5923 (Finding #5) — is_exhausted must reflect THIS window's own remaining
       // percentage, not the connection-wide AND-across-all-windows aggregate
@@ -251,20 +254,18 @@ export function setQuotaCache(
       const windowExhausted = remainingPercentage <= 0;
       // #4438 — only persist on the first observation or a real change.
       if (!quotaSnapshotChanged(prior, windowKey, remainingPercentage, windowExhausted)) continue;
-      try {
-        saveQuotaSnapshot({
-          provider,
-          connection_id: connectionId,
-          window_key: windowKey,
-          remaining_percentage: remainingPercentage,
-          is_exhausted: windowExhausted ? 1 : 0,
-          next_reset_at: quotaInfo.resetAt ?? null,
-          window_duration_ms: entry.windowDurationMs ?? null,
-          raw_data: null,
-        });
-      } catch (error) {
+      saveQuotaSnapshot({
+        provider,
+        connection_id: connectionId,
+        window_key: windowKey,
+        remaining_percentage: remainingPercentage,
+        is_exhausted: windowExhausted ? 1 : 0,
+        next_reset_at: quotaInfo.resetAt ?? null,
+        window_duration_ms: entry.windowDurationMs ?? null,
+        raw_data: null,
+      }).catch((error) => {
         console.error("[quotaCache] Failed to save snapshot:", error);
-      }
+      });
     }
   }
 }
@@ -276,15 +277,10 @@ export function getQuotaCache(connectionId: string): QuotaCacheEntry | null {
   return cache.get(connectionId) || null;
 }
 
-function hydrateQuotaCacheFromSnapshots(connectionId: string): QuotaCacheEntry | null {
-  if (cache.has(connectionId)) return cache.get(connectionId) || null;
-
-  let snapshots;
-  try {
-    snapshots = getLatestQuotaSnapshotsForConnection(connectionId);
-  } catch {
-    return null;
-  }
+function buildCacheEntryFromSnapshots(
+  connectionId: string,
+  snapshots: QuotaSnapshotRow[]
+): QuotaCacheEntry | null {
   if (!snapshots.length) return null;
 
   const quotas: Record<string, QuotaInfo> = {};
@@ -324,7 +320,7 @@ function hydrateQuotaCacheFromSnapshots(connectionId: string): QuotaCacheEntry |
 
   if (Object.keys(quotas).length === 0) return null;
 
-  const entry: QuotaCacheEntry = {
+  return {
     connectionId,
     provider,
     quotas,
@@ -333,8 +329,24 @@ function hydrateQuotaCacheFromSnapshots(connectionId: string): QuotaCacheEntry |
     nextResetAt: exhausted ? earliestResetAt(quotas) : null,
     windowDurationMs,
   };
-  cache.set(connectionId, entry);
-  return entry;
+}
+
+function hydrateQuotaCacheFromSnapshots(connectionId: string): QuotaCacheEntry | null {
+  if (cache.has(connectionId)) return cache.get(connectionId) || null;
+
+  // Fire-and-forget async DB hydration. Returns null synchronously on first call;
+  // subsequent callers benefit once the promise resolves and populates the cache.
+  getLatestQuotaSnapshotsForConnection(connectionId)
+    .then((snapshots) => {
+      if (cache.has(connectionId)) return; // already populated by another path
+      const entry = buildCacheEntryFromSnapshots(connectionId, snapshots);
+      if (entry) cache.set(connectionId, entry);
+    })
+    .catch(() => {
+      // DB lookup failure is non-fatal.
+    });
+
+  return null;
 }
 
 /**
@@ -469,7 +481,7 @@ async function backgroundRefreshTick() {
   tickRunning = true;
 
   try {
-    cleanupOldSnapshots();
+    await cleanupOldSnapshots();
     const now = Date.now();
     const pending = [...cache.values()].filter((e) => needsRefresh(e, now));
 

@@ -163,57 +163,57 @@ export class CircuitBreaker {
   }
 
   _restoreFromDb() {
-    try {
-      const saved = loadCircuitBreakerState(this.name);
-      if (saved) {
-        if (
-          saved.state === STATE.CLOSED ||
-          saved.state === STATE.DEGRADED ||
-          saved.state === STATE.OPEN ||
-          saved.state === STATE.HALF_OPEN
-        ) {
-          this.state = saved.state;
-        }
-        this.failureCount = saved.failureCount;
-        this.lastFailureTime = saved.lastFailureTime;
-        const savedKind = saved.options?.lastFailureKind;
-        if (
-          savedKind === "rate_limit" ||
-          savedKind === "quota_exhausted" ||
-          savedKind === "transient"
-        ) {
-          this.lastFailureKind = savedKind;
-        }
-        this.openCycleCount = (saved.options?.openCycleCount as number) ?? 0;
-        this.kindFailureCounts = (saved.options?.kindFailureCounts as Record<string, number>) ?? {};
+    loadCircuitBreakerState(this.name)
+      .then((saved) => {
+        if (saved) {
+          if (
+            saved.state === STATE.CLOSED ||
+            saved.state === STATE.DEGRADED ||
+            saved.state === STATE.OPEN ||
+            saved.state === STATE.HALF_OPEN
+          ) {
+            this.state = saved.state;
+          }
+          this.failureCount = saved.failureCount;
+          this.lastFailureTime = saved.lastFailureTime;
+          const savedKind = saved.options?.lastFailureKind;
+          if (
+            savedKind === "rate_limit" ||
+            savedKind === "quota_exhausted" ||
+            savedKind === "transient"
+          ) {
+            this.lastFailureKind = savedKind;
+          }
+          this.openCycleCount = (saved.options?.openCycleCount as number) ?? 0;
+          this.kindFailureCounts =
+            (saved.options?.kindFailureCounts as Record<string, number>) ?? {};
 
-        if (this.state === STATE.HALF_OPEN) {
-          this.halfOpenAllowed = this.halfOpenRequests;
+          if (this.state === STATE.HALF_OPEN) {
+            this.halfOpenAllowed = this.halfOpenRequests;
+          }
         }
-      }
-    } catch {
-      // DB may not be ready yet (build phase)
-    }
+      })
+      .catch(() => {
+        // DB may not be ready yet (build phase)
+      });
   }
 
   _persistToDb() {
-    try {
-      saveCircuitBreakerState(this.name, {
-        state: this.state,
-        failureCount: this.failureCount,
-        lastFailureTime: this.lastFailureTime,
-        options: {
-          failureThreshold: this.failureThreshold,
-          resetTimeout: this.resetTimeout,
-          halfOpenRequests: this.halfOpenRequests,
-          lastFailureKind: this.lastFailureKind,
-          openCycleCount: this.openCycleCount,
-          kindFailureCounts: this.kindFailureCounts,
-        },
-      });
-    } catch {
+    saveCircuitBreakerState(this.name, {
+      state: this.state,
+      failureCount: this.failureCount,
+      lastFailureTime: this.lastFailureTime,
+      options: {
+        failureThreshold: this.failureThreshold,
+        resetTimeout: this.resetTimeout,
+        halfOpenRequests: this.halfOpenRequests,
+        lastFailureKind: this.lastFailureKind,
+        openCycleCount: this.openCycleCount,
+        kindFailureCounts: this.kindFailureCounts,
+      },
+    }).catch(() => {
       // Non-critical
-    }
+    });
   }
 
   /**
@@ -492,9 +492,7 @@ const _registrySweep = setInterval(() => {
       (!status.lastFailureTime || now - status.lastFailureTime > 30 * 60 * 1000)
     ) {
       registry.delete(name);
-      try {
-        deleteCircuitBreakerState(name);
-      } catch {}
+      deleteCircuitBreakerState(name).catch(() => {});
     }
   }
 }, 5 * 60_000);
@@ -524,9 +522,7 @@ function evictColdBreakersIfNeeded(): void {
   const target = registry.size - MAX_REGISTRY_SIZE + 1;
   for (let i = 0; i < candidates.length && i < target; i++) {
     registry.delete(candidates[i].name);
-    try {
-      deleteCircuitBreakerState(candidates[i].name);
-    } catch {}
+    deleteCircuitBreakerState(candidates[i].name).catch(() => {});
   }
 }
 
@@ -585,16 +581,17 @@ export function getCircuitBreaker(name: string, options?: CircuitBreakerOptions)
 }
 
 export function getAllCircuitBreakerStatuses() {
-  try {
-    const persisted = loadAllCircuitBreakerStates();
-    for (const cb of persisted) {
-      if (!registry.has(cb.name)) {
-        getCircuitBreaker(cb.name);
+  loadAllCircuitBreakerStates()
+    .then((persisted) => {
+      for (const cb of persisted) {
+        if (!registry.has(cb.name)) {
+          getCircuitBreaker(cb.name);
+        }
       }
-    }
-  } catch {
-    // Use registry only
-  }
+    })
+    .catch(() => {
+      // Use registry only
+    });
   return Array.from(registry.values()).map((cb) => cb.getStatus());
 }
 
@@ -603,9 +600,7 @@ export function resetAllCircuitBreakers() {
     cb.reset();
   }
   registry.clear();
-  try {
-    deleteAllCircuitBreakerStates();
-  } catch {
+  deleteAllCircuitBreakerStates().catch(() => {
     // Non-critical
-  }
+  });
 }

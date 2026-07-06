@@ -124,7 +124,7 @@ export async function POST(request: Request) {
         ? new Date(Date.now() + expiresInDays * 86_400_000).toISOString()
         : null;
 
-    const { record, secret } = createAccessToken({
+    const { record, secret } = await createAccessToken({
       name: tokenName,
       scope: tokenScope,
       expiresAt,

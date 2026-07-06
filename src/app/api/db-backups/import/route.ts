@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import path from "path";
 import fs from "fs";
 import os from "os";
-import { getDbInstance, resetDbInstance, SQLITE_FILE } from "@/lib/db/core";
+import { getDbInstance, resetDbInstance, resetDbClient, SQLITE_FILE } from "@/lib/db/core";
 import { openDatabaseAsync } from "@/lib/db/adapters/driverFactory";
 import type { SqliteAdapter } from "@/lib/db/adapters/types";
 import {
@@ -162,7 +162,8 @@ export async function POST(request: Request) {
     // Create pre-import backup
     backupDbFile("pre-import");
 
-    // Close and reset current DB connection
+    // Close and reset current DB connection (both sync and async client singletons).
+    resetDbClient();
     resetDbInstance();
 
     // Remove main file and WAL sidecars
@@ -185,7 +186,7 @@ export async function POST(request: Request) {
 
     // Reopen and verify
     getDbInstance();
-    const { connCount, nodeCount, comboCount, keyCount } = countImportedRows();
+    const { connCount, nodeCount, comboCount, keyCount } = await countImportedRows();
 
     console.log(
       `[DB] Imported database from upload: ${connCount} connections, ${nodeCount} nodes, ${comboCount} combos, ${keyCount} API keys`

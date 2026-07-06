@@ -43,7 +43,7 @@ test.after(() => {
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });
 
-test("trimCallLogsToMaxRows deletes >999 rows in one pass without 'too many SQL variables'", () => {
+test("trimCallLogsToMaxRows deletes >999 rows in one pass without 'too many SQL variables'", async () => {
   const db = core.getDbInstance();
   const total = 1500;
   const base = Date.parse("2026-01-01T00:00:00.000Z");
@@ -62,8 +62,8 @@ test("trimCallLogsToMaxRows deletes >999 rows in one pass without 'too many SQL 
   // Trim to 10 rows → 1490 ids must be deleted in a single trim batch (batchSize=5000),
   // which without chunking would exceed SQLite's ~999 bound-parameter limit and throw.
   let result: { deletedRows: number; deletedArtifacts: number } | undefined;
-  assert.doesNotThrow(() => {
-    result = callLogs.trimCallLogsToMaxRows(10);
+  await assert.doesNotReject(async () => {
+    result = await callLogs.trimCallLogsToMaxRows(10);
   });
 
   assert.equal(result!.deletedRows, total - 10, "all overflow rows must be deleted (chunked)");
@@ -74,7 +74,7 @@ test("trimCallLogsToMaxRows deletes >999 rows in one pass without 'too many SQL 
   );
 });
 
-test("deleteCallLogsBefore deletes a batch larger than SQLite's variable limit without throwing", () => {
+test("deleteCallLogsBefore deletes a batch larger than SQLite's variable limit without throwing", async () => {
   const db = core.getDbInstance();
   // Exceed SQLITE_MAX_VARIABLE_NUMBER (999 on many builds, 32766 on newer ones).
   // deleteCallLogsBefore passes EVERY matching id to one DELETE … IN (...) — the
@@ -90,8 +90,8 @@ test("deleteCallLogsBefore deletes a batch larger than SQLite's variable limit w
   insertMany();
 
   let result: { deletedRows: number } | undefined;
-  assert.doesNotThrow(() => {
-    result = callLogs.deleteCallLogsBefore("2030-01-01T00:00:00.000Z");
+  await assert.doesNotReject(async () => {
+    result = await callLogs.deleteCallLogsBefore("2030-01-01T00:00:00.000Z");
   });
 
   assert.equal(result!.deletedRows, total, "every row before the cutoff must be deleted");

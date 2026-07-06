@@ -1,4 +1,4 @@
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 /**
  * Feature 5004 — self-correcting context-window overrides.
@@ -54,19 +54,19 @@ function toOverride(row: OverrideRow): ModelContextOverride {
 }
 
 /** Full override record for (provider, modelId), or null. Never throws. */
-export function getModelContextOverrideRecord(
+export async function getModelContextOverrideRecord(
   provider: string | null | undefined,
   modelId: string | null | undefined
-): ModelContextOverride | null {
+): Promise<ModelContextOverride | null> {
   const key = normalizeKey(provider, modelId);
   if (!key) return null;
   try {
-    const row = getDbInstance()
-      .prepare(
-        "SELECT provider, model_id, real_context, source, refreshed_at " +
-          "FROM model_context_overrides WHERE provider = ? AND model_id = ?"
-      )
-      .get(key.provider, key.modelId) as OverrideRow | undefined;
+    const row = await getDbClient().get<OverrideRow>(
+      "SELECT provider, model_id, real_context, source, refreshed_at " +
+        "FROM model_context_overrides WHERE provider = ? AND model_id = ?",
+      key.provider,
+      key.modelId
+    );
     return row ? toOverride(row) : null;
   } catch {
     // Table may not exist yet (pre-migration) — fall through to the catalog.
@@ -75,11 +75,11 @@ export function getModelContextOverrideRecord(
 }
 
 /** The overridden context window (tokens) for (provider, modelId), or null. Never throws. */
-export function getModelContextOverride(
+export async function getModelContextOverride(
   provider: string | null | undefined,
   modelId: string | null | undefined
-): number | null {
-  const record = getModelContextOverrideRecord(provider, modelId);
+): Promise<number | null> {
+  const record = await getModelContextOverrideRecord(provider, modelId);
   return record ? record.realContext : null;
 }
 
@@ -87,45 +87,50 @@ export function getModelContextOverride(
  * Upsert an override. `realContext` must be a positive integer (a token count);
  * anything else is rejected (no write). Returns true when a row was written.
  */
-export function setModelContextOverride(
+export async function setModelContextOverride(
   provider: string,
   modelId: string,
   realContext: number,
   source: ModelContextOverrideSource = "manual"
-): boolean {
+): Promise<boolean> {
   const key = normalizeKey(provider, modelId);
   if (!key || !isPositiveInteger(realContext)) return false;
   const normalizedSource: ModelContextOverrideSource =
     source === "auto:discovery" ? "auto:discovery" : "manual";
-  getDbInstance()
-    .prepare(
-      "INSERT OR REPLACE INTO model_context_overrides " +
-        "(provider, model_id, real_context, source, refreshed_at) " +
-        "VALUES (?, ?, ?, ?, datetime('now'))"
-    )
-    .run(key.provider, key.modelId, realContext, normalizedSource);
+  await getDbClient().run(
+    "INSERT OR REPLACE INTO model_context_overrides " +
+      "(provider, model_id, real_context, source, refreshed_at) " +
+      "VALUES (?, ?, ?, ?, datetime('now'))",
+    key.provider,
+    key.modelId,
+    realContext,
+    normalizedSource
+  );
   return true;
 }
 
 /** Remove an override. Returns true when a row was deleted. */
-export function removeModelContextOverride(provider: string, modelId: string): boolean {
+export async function removeModelContextOverride(
+  provider: string,
+  modelId: string
+): Promise<boolean> {
   const key = normalizeKey(provider, modelId);
   if (!key) return false;
-  const info = getDbInstance()
-    .prepare("DELETE FROM model_context_overrides WHERE provider = ? AND model_id = ?")
-    .run(key.provider, key.modelId);
+  const info = await getDbClient().run(
+    "DELETE FROM model_context_overrides WHERE provider = ? AND model_id = ?",
+    key.provider,
+    key.modelId
+  );
   return info.changes > 0;
 }
 
 /** All overrides, newest refresh first. Never throws. */
-export function listModelContextOverrides(): ModelContextOverride[] {
+export async function listModelContextOverrides(): Promise<ModelContextOverride[]> {
   try {
-    const rows = getDbInstance()
-      .prepare(
-        "SELECT provider, model_id, real_context, source, refreshed_at " +
-          "FROM model_context_overrides ORDER BY refreshed_at DESC"
-      )
-      .all() as OverrideRow[];
+    const rows = await getDbClient().all<OverrideRow>(
+      "SELECT provider, model_id, real_context, source, refreshed_at " +
+        "FROM model_context_overrides ORDER BY refreshed_at DESC"
+    );
     return rows.map(toOverride);
   } catch {
     return [];

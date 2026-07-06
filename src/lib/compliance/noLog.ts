@@ -1,17 +1,8 @@
-import type { SqliteAdapter } from "@/lib/db/adapters/types";
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 
 // #2650: extracted from compliance/index.ts to break the
 // callLogs.ts → compliance/index.ts → callLogs.ts cycle that deadlocks
 // the bundled MCP server under Node.js 24's stricter ESM evaluation.
-
-function getDb(): SqliteAdapter | null {
-  try {
-    return getDbInstance();
-  } catch {
-    return null;
-  }
-}
 
 const noLogKeys = new Set<string>();
 const noLogDbCache = new Map<string, { value: boolean; timestamp: number }>();
@@ -36,13 +27,14 @@ export function setNoLog(apiKeyId: string, noLog: boolean): void {
   noLogDbCache.set(apiKeyId, { value: noLog, timestamp: Date.now() });
 }
 
-function ensureNoLogColumn(db: SqliteAdapter): boolean {
+async function ensureNoLogColumn(): Promise<boolean> {
   if (noLogColumnVerified) {
     return hasNoLogColumn;
   }
 
   try {
-    const columns = db.prepare("PRAGMA table_info(api_keys)").all() as Array<{ name: string }>;
+    const db = getDbClient();
+    const columns = await db.all<{ name: string }>("PRAGMA table_info(api_keys)");
     hasNoLogColumn = columns.some((column) => column.name === "no_log");
   } catch {
     hasNoLogColumn = false;
@@ -52,10 +44,8 @@ function ensureNoLogColumn(db: SqliteAdapter): boolean {
   return hasNoLogColumn;
 }
 
-function readNoLogFromDb(apiKeyId: string): boolean {
-  const db = getDb();
-  if (!db || !apiKeyId) return false;
-  if (!ensureNoLogColumn(db)) return false;
+async function readNoLogFromDb(apiKeyId: string): Promise<boolean> {
+  if (!apiKeyId) return false;
 
   const cached = noLogDbCache.get(apiKeyId);
   if (cached && Date.now() - cached.timestamp < NO_LOG_CACHE_TTL_MS) {
@@ -63,9 +53,14 @@ function readNoLogFromDb(apiKeyId: string): boolean {
   }
 
   try {
-    const row = db.prepare("SELECT no_log FROM api_keys WHERE id = ?").get(apiKeyId) as
-      | { no_log?: number }
-      | undefined;
+    const db = getDbClient();
+    const hasColumn = await ensureNoLogColumn();
+    if (!hasColumn) return false;
+
+    const row = await db.get<{ no_log?: number }>(
+      "SELECT no_log FROM api_keys WHERE id = ?",
+      apiKeyId
+    );
     const value = Boolean(row && Number(row.no_log) === 1);
     noLogDbCache.set(apiKeyId, { value, timestamp: Date.now() });
     return value;
@@ -78,9 +73,20 @@ export function isNoLog(apiKeyId: string): boolean {
   if (!apiKeyId) return false;
   if (noLogKeys.has(apiKeyId)) return true;
 
-  const persistedNoLog = readNoLogFromDb(apiKeyId);
-  if (persistedNoLog) {
-    noLogKeys.add(apiKeyId);
+  // Check in-memory cache (fast path)
+  const cached = noLogDbCache.get(apiKeyId);
+  if (cached && Date.now() - cached.timestamp < NO_LOG_CACHE_TTL_MS) {
+    if (cached.value) noLogKeys.add(apiKeyId);
+    return cached.value;
   }
-  return persistedNoLog;
+
+  // Seed the cache asynchronously; return false conservatively until seeded.
+  (async () => {
+    const persistedNoLog = await readNoLogFromDb(apiKeyId);
+    if (persistedNoLog) {
+      noLogKeys.add(apiKeyId);
+    }
+  })();
+
+  return false;
 }

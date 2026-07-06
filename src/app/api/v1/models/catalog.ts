@@ -37,7 +37,7 @@ import {
   getCatalogDiagnosticsHeaders,
   disambiguateCatalogModelNames,
 } from "@/lib/modelMetadataRegistry";
-import { getSyncedCapability } from "@/lib/modelsDevSync";
+import { getSyncedCapabilitySync } from "@/lib/modelsDevSync";
 import { getModelSpec } from "@/shared/constants/modelSpecs";
 import {
   isModelCatalogNamesEnabled,
@@ -272,7 +272,7 @@ export async function getUnifiedModelsResponse(
 
       const providerId = canonical.provider || targetModel.providerId;
       const modelId = canonical.model || targetModel.modelId;
-      const synced = getSyncedCapability(providerId, modelId);
+      const synced = getSyncedCapabilitySync(providerId, modelId);
       const spec = getModelSpec(modelId);
       const registryModel = getRegistryModel(providerId, modelId);
       const syncedInputModalities = parseJsonStringArray(synced?.modalities_input);

@@ -107,11 +107,11 @@ export function classifyTier(provider: string, model: string): TierAssignment {
   return assignment;
 }
 
-export function setTierConfig(config?: Partial<TierConfig> | null): void {
+export async function setTierConfig(config?: Partial<TierConfig> | null): Promise<void> {
   if (config === null || config === undefined) {
     try {
-      const { loadTierConfig } = require("../../src/lib/db/tierConfig");
-      currentConfig = loadTierConfig();
+      const { loadTierConfig } = await import("../../src/lib/db/tierConfig");
+      currentConfig = await loadTierConfig();
     } catch {
       currentConfig = DEFAULT_TIER_CONFIG;
     }

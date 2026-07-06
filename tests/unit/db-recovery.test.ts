@@ -21,7 +21,7 @@ async function withRecoveryEnv(fn: (dataDir: string) => Promise<void>) {
 test("countEncryptedCredentials returns 0 on fresh db", async () => {
   await withRecoveryEnv(async () => {
     const { countEncryptedCredentials } = await import("../../src/lib/db/recovery.ts");
-    const count = countEncryptedCredentials();
+    const count = await countEncryptedCredentials();
     assert.equal(count, 0);
   });
 });
@@ -39,14 +39,14 @@ test("resetEncryptedColumns dry-run returns affected count without mutating", as
       "INSERT INTO provider_connections (id, provider, name, api_key, created_at, updated_at) VALUES (?,?,?,?,?,?)"
     ).run("test-id", "openai", "test-conn", "enc:v1:fake-encrypted-value", now, now);
 
-    const countBefore = countEncryptedCredentials();
+    const countBefore = await countEncryptedCredentials();
     assert.equal(countBefore, 1);
 
-    const { affected } = resetEncryptedColumns({ dryRun: true });
+    const { affected } = await resetEncryptedColumns({ dryRun: true });
     assert.equal(affected, 1);
 
     // Dry run should NOT have mutated
-    const countAfter = countEncryptedCredentials();
+    const countAfter = await countEncryptedCredentials();
     assert.equal(countAfter, 1);
   });
 });
@@ -62,7 +62,7 @@ test("resetEncryptedColumns force mode nulls encrypted columns", async () => {
       "INSERT INTO provider_connections (id, provider, name, api_key, access_token, created_at, updated_at) VALUES (?,?,?,?,?,?,?)"
     ).run("rec-id", "anthropic", "rec-conn", "enc:v1:key123", "enc:v1:tok456", now, now);
 
-    const { affected } = resetEncryptedColumns({ dryRun: false });
+    const { affected } = await resetEncryptedColumns({ dryRun: false });
     assert.ok(affected >= 1);
 
     const row = db

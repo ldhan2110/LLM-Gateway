@@ -2425,7 +2425,7 @@ export async function handleChatCore({
                   try {
                     const { setConnectionRateLimitUntil } = await import("@/lib/db/providers");
                     const untilMs = Date.now() + (retryAfterMs || 60_000);
-                    setConnectionRateLimitUntil(String(failedConnectionId), untilMs);
+                    await setConnectionRateLimitUntil(String(failedConnectionId), untilMs);
                   } catch {
                     // ignore — best effort
                   }
@@ -2436,11 +2436,9 @@ export async function handleChatCore({
 
                 // Clear session affinity so next request won't be pinned to the failing account
                 if (codexSessionAffinityKey) {
-                  try {
-                    deleteSessionAccountAffinity(codexSessionAffinityKey, "codex");
-                  } catch {
+                  deleteSessionAccountAffinity(codexSessionAffinityKey, "codex").catch(() => {
                     // best-effort
-                  }
+                  });
                 }
 
                 // Fetch next available codex connection (excluding all previously failed ones)

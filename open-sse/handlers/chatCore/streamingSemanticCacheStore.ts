@@ -72,7 +72,9 @@ function writeStreamingCacheEntry(
       args.apiKeyId ?? undefined
     );
     const tokensSaved = streamTokensSaved(args.streamUsage);
-    deps.setCachedResponse(sig, args.model, cleanBody, tokensSaved);
+    Promise.resolve(deps.setCachedResponse(sig, args.model, cleanBody, tokensSaved)).catch(
+      () => {}
+    );
     args.log?.debug?.("CACHE", `Stored streaming response for ${args.model} (${tokensSaved} tokens)`);
   } catch {
     // Cache write failed — non-critical

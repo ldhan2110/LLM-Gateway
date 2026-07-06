@@ -50,7 +50,7 @@ export async function GET(request: Request): Promise<Response> {
   if (authError) return authError;
 
   try {
-    const presets = listPlaygroundPresets();
+    const presets = await listPlaygroundPresets();
     return new Response(JSON.stringify({ presets }), {
       status: 200,
       headers: { "Content-Type": "application/json", ...CORS_HEADERS },
@@ -93,7 +93,7 @@ export async function POST(request: Request): Promise<Response> {
 
   // 3. Create preset (Hard Rule #5 — via DB module)
   try {
-    const created = createPlaygroundPreset({
+    const created = await createPlaygroundPreset({
       name: body.name,
       endpoint: body.endpoint,
       model: body.model,

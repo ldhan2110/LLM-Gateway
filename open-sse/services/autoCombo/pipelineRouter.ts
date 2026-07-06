@@ -83,17 +83,18 @@ export interface StageExecutorResult {
  * Resolve a fitness tier to a concrete model string using the available models
  * from the combo's candidate pool. Falls back to sensible defaults.
  */
-function resolveModelForTier(
+async function resolveModelForTier(
   tier: FitnessTier,
   availableModels: string[],
   taskType: string
-): string {
+): Promise<string> {
   // Score each available model for this task type and tier
-  const scored = availableModels
-    .map((model) => ({
+  const scored = (await Promise.all(
+    availableModels.map(async (model) => ({
       model,
-      fitness: getTaskFitness(model, taskType),
+      fitness: await getTaskFitness(model, taskType),
     }))
+  ))
     .sort((a, b) => b.fitness - a.fitness);
 
   const tierConfig = FITNESS_TIERS[tier] as FitnessTierConfig | undefined;
@@ -135,7 +136,7 @@ function createStageExecutor(
   }: StageExecutorArgs & { fitnessTier?: FitnessTier }): Promise<StageExecutorResult> => {
     // Resolve model for this stage's fitness tier
     const model = fitnessTier
-      ? resolveModelForTier(fitnessTier, availableModels, taskType)
+      ? await resolveModelForTier(fitnessTier, availableModels, taskType)
       : undefined;
 
     // Build a modified request body with pipeline stage messages

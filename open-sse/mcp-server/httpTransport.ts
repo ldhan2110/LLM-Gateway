@@ -78,17 +78,17 @@ function closeAllStreamableSessions(): void {
   }
 }
 
-function ensureSseServer(): {
+async function ensureSseServer(): Promise<{
   server: McpServer;
   transport: WebStandardStreamableHTTPServerTransport;
-} {
+}> {
   if (_sseServer && _sseTransport) {
     return { server: _sseServer, transport: _sseTransport };
   }
 
   closeAllStreamableSessions();
 
-  _sseServer = createMcpServer();
+  _sseServer = await createMcpServer();
   _sseTransport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => randomUUID(),
   });
@@ -100,11 +100,11 @@ function ensureSseServer(): {
   return { server: _sseServer, transport: _sseTransport };
 }
 
-function createStreamableSession(): StreamableSession {
+async function createStreamableSession(): Promise<StreamableSession> {
   closeSseTransport();
 
   const sessionId = randomUUID();
-  const server = createMcpServer();
+  const server = await createMcpServer();
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: () => sessionId,
   });
@@ -179,7 +179,7 @@ async function handleStreamableRequest(request: Request): Promise<Response> {
       // initialization rather than hard-failing with 404. This avoids requiring users
       // to manually restart their MCP client after every server restart.
       if (await isInitializeRequest(request)) {
-        const newSession = createStreamableSession();
+        const newSession = await createStreamableSession();
         try {
           const response = await withMcpHttpAuthContext(request, () =>
             newSession.transport.handleRequest(request)
@@ -222,7 +222,7 @@ async function handleStreamableRequest(request: Request): Promise<Response> {
     return errorResponse("Bad Request: Mcp-Session-Id header is required", -32000);
   }
 
-  const session = createStreamableSession();
+  const session = await createStreamableSession();
 
   try {
     const response = await withMcpHttpAuthContext(request, () =>
@@ -253,7 +253,7 @@ export async function handleMcpStreamableHTTP(request: Request): Promise<Respons
  * and POST for messages (the Streamable HTTP transport supports both patterns).
  */
 export async function handleMcpSSE(request: Request): Promise<Response> {
-  const { transport } = ensureSseServer();
+  const { transport } = await ensureSseServer();
 
   try {
     return await withMcpHttpAuthContext(request, () => transport.handleRequest(request));

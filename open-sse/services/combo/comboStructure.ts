@@ -11,7 +11,7 @@
  * No barrel import — depends only on sibling leaves.
  */
 
-import { getModelContextLimit } from "../../../src/lib/modelCapabilities";
+import { getModelContextLimitSync as getModelContextLimit } from "../../../src/lib/modelCapabilities";
 import { getComboModelString, normalizeComboStep } from "../../../src/lib/combos/steps.ts";
 import { estimateTokens } from "../contextManager.ts";
 import { getResolvedModelCapabilities } from "../modelCapabilities.ts";

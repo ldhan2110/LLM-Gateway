@@ -108,7 +108,7 @@ test.after(async () => {
   await resetTestDataDir();
 });
 
-test("call log file rotation honors both retention days and file count", () => {
+test("call log file rotation honors both retention days and file count", async () => {
   assert.ok(CALL_LOGS_DIR, "CALL_LOGS_DIR should resolve for test data dir");
   fs.rmSync(CALL_LOGS_DIR, { recursive: true, force: true });
   fs.mkdirSync(CALL_LOGS_DIR, { recursive: true });
@@ -172,7 +172,7 @@ test("call log file rotation honors both retention days and file count", () => {
     new Date(now - oneDay)
   );
 
-  rotateCallLogs();
+  await rotateCallLogs();
 
   const db = core.getDbInstance();
   assert.equal(
@@ -192,7 +192,7 @@ test("call log file rotation honors both retention days and file count", () => {
   assert.equal(fs.existsSync(path.join(CALL_LOGS_DIR, keepCRelPath)), true);
 });
 
-test("rotateCallLogs swallows filesystem errors during cleanup", () => {
+test("rotateCallLogs swallows filesystem errors during cleanup", async () => {
   assert.ok(CALL_LOGS_DIR, "CALL_LOGS_DIR should resolve for test data dir");
   fs.mkdirSync(CALL_LOGS_DIR, { recursive: true });
 
@@ -208,7 +208,7 @@ test("rotateCallLogs swallows filesystem errors during cleanup", () => {
   };
 
   try {
-    assert.doesNotThrow(() => rotateCallLogs());
+    await assert.doesNotReject(async () => { await rotateCallLogs(); });
   } finally {
     fs.readdirSync = originalReaddirSync;
     console.error = originalConsoleError;
@@ -218,7 +218,7 @@ test("rotateCallLogs swallows filesystem errors during cleanup", () => {
   assert.ok(consoleCalls.some((line) => /simulated readdir failure/.test(line)));
 });
 
-test("cleanupOverflowCallLogFiles logs and returns when directory scanning fails", () => {
+test("cleanupOverflowCallLogFiles logs and returns when directory scanning fails", async () => {
   assert.ok(CALL_LOGS_DIR, "CALL_LOGS_DIR should resolve for test data dir");
   fs.mkdirSync(CALL_LOGS_DIR, { recursive: true });
 
@@ -237,7 +237,7 @@ test("cleanupOverflowCallLogFiles logs and returns when directory scanning fails
   };
 
   try {
-    assert.doesNotThrow(() => cleanupOverflowCallLogFiles(CALL_LOGS_DIR, 2));
+    await assert.doesNotReject(async () => { await cleanupOverflowCallLogFiles(CALL_LOGS_DIR, 2); });
   } finally {
     fs.readdirSync = originalReaddirSync;
     console.error = originalConsoleError;
@@ -248,7 +248,7 @@ test("cleanupOverflowCallLogFiles logs and returns when directory scanning fails
   assert.match(consoleCalls[0], /simulated overflow scan failure/);
 });
 
-test("cleanupOverflowCallLogFiles ignores directory entries that fail nested inspection", () => {
+test("cleanupOverflowCallLogFiles ignores directory entries that fail nested inspection", async () => {
   assert.ok(CALL_LOGS_DIR, "CALL_LOGS_DIR should resolve for test data dir");
   fs.rmSync(CALL_LOGS_DIR, { recursive: true, force: true });
   fs.mkdirSync(CALL_LOGS_DIR, { recursive: true });
@@ -266,7 +266,7 @@ test("cleanupOverflowCallLogFiles ignores directory entries that fail nested ins
   };
 
   try {
-    assert.doesNotThrow(() => cleanupOverflowCallLogFiles(CALL_LOGS_DIR, 1));
+    await assert.doesNotReject(async () => { await cleanupOverflowCallLogFiles(CALL_LOGS_DIR, 1); });
   } finally {
     fs.readdirSync = originalReaddirSync;
   }
@@ -275,7 +275,7 @@ test("cleanupOverflowCallLogFiles ignores directory entries that fail nested ins
   assert.equal(fs.existsSync(path.join(nestedDir, "100000_keep.json")), true);
 });
 
-test("cleanupOverflowCallLogFiles ignores rmSync failures for old artifacts", () => {
+test("cleanupOverflowCallLogFiles ignores rmSync failures for old artifacts", async () => {
   assert.ok(CALL_LOGS_DIR, "CALL_LOGS_DIR should resolve for test data dir");
   fs.rmSync(CALL_LOGS_DIR, { recursive: true, force: true });
   fs.mkdirSync(CALL_LOGS_DIR, { recursive: true });
@@ -314,7 +314,7 @@ test("cleanupOverflowCallLogFiles ignores rmSync failures for old artifacts", ()
   };
 
   try {
-    assert.doesNotThrow(() => cleanupOverflowCallLogFiles(CALL_LOGS_DIR, 1));
+    await assert.doesNotReject(async () => { await cleanupOverflowCallLogFiles(CALL_LOGS_DIR, 1); });
   } finally {
     fs.rmSync = originalRmSync;
   }

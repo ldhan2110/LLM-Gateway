@@ -358,7 +358,7 @@ test("context-relay codex quota handoff: does NOT fire when provider is openai (
   // No codex quota handoff record in DB.
   // (The universal handoff also does not fire because no prior model is seeded,
   // so getLastSessionModel returns null → no model switch detected.)
-  const handoff = getHandoff(SESSION_ID, CODEX_COMBO_NAME);
+  const handoff = await getHandoff(SESSION_ID, CODEX_COMBO_NAME);
   assert.equal(
     handoff,
     null,

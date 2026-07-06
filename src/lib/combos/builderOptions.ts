@@ -498,7 +498,7 @@ function normalizeSyncedModels(raw: unknown): SyncedModelLike[] {
 }
 
 export async function getComboBuilderOptions(): Promise<ComboBuilderOptionsPayload> {
-  getSyncedCapabilities();
+  getSyncedCapabilities().catch(() => undefined); // warm cache, fire-and-forget
   const [connections, providerNodes, customModelsMap, syncedModelsMap, combos, settings] =
     await Promise.all([
       getProviderConnections(),

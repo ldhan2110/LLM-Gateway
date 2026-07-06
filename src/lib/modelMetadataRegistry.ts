@@ -11,7 +11,7 @@ import {
 } from "@/shared/constants/modelSpecs";
 import { AI_PROVIDERS } from "@/shared/constants/providers";
 import { PROVIDER_ID_TO_ALIAS, PROVIDER_MODELS } from "@/shared/constants/models";
-import { getSyncStatus, getSyncedCapability } from "@/lib/modelsDevSync";
+import { getSyncStatus, getSyncedCapabilitySync } from "@/lib/modelsDevSync";
 
 const MODEL_METADATA_SCHEMA_VERSION = "model-metadata-v1";
 
@@ -192,7 +192,7 @@ export function getCanonicalModelMetadata(input: {
   const registryModel = getRegistryModel(providerAlias || provider, resolved.model || modelId);
   const staticSpec = getModelSpec(resolved.model || modelId);
   const syncedCapability =
-    provider && resolved.model ? getSyncedCapability(provider, resolved.model) : null;
+    provider && resolved.model ? getSyncedCapabilitySync(provider, resolved.model) : null;
   const canonicalStaticAlias = resolveStaticModelAlias(resolved.model || modelId);
   const modalities = buildModalities(
     resolved.modalitiesInput,

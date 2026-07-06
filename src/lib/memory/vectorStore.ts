@@ -15,7 +15,7 @@ import {
   markAllMemoriesNeedReindex,
   countMemoryReindexPending,
 } from "../localDb";
-import { getDbInstance } from "../db/core";
+import { getDbInstance, getDbClient } from "../db/core";
 import { logger } from "../../../open-sse/utils/logger.ts";
 import { sanitizeErrorMessage } from "../../../open-sse/utils/error.ts";
 
@@ -122,16 +122,15 @@ function vecValueExpr(q: VecQuantization): string {
 }
 
 /** Quantization mode of the live table (from the persisted signature). */
-function liveVecQuantization(): VecQuantization {
-  return storedVecQuantization(getMemoryVecMeta().embeddingSignature);
+async function liveVecQuantization(): Promise<VecQuantization> {
+  return storedVecQuantization((await getMemoryVecMeta()).embeddingSignature);
 }
 
 // ──────────────── Implementation ────────────────
 
 class VectorStoreImpl implements VectorStore {
   async ensureReady(resolution: EmbeddingResolution): Promise<{ ready: boolean; reason: string }> {
-    const db = getDbInstance();
-    const meta = getMemoryVecMeta();
+    const meta = await getMemoryVecMeta();
     const requested = requestedVecQuantization();
 
     // The quantization mode is folded into the signature so flipping it (e.g.
@@ -158,10 +157,11 @@ class VectorStoreImpl implements VectorStore {
       const dim = meta.activeDim ?? resolution.dimensions;
       const q = storedVecQuantization(meta.embeddingSignature);
       try {
-        db.exec(
+        const db = getDbClient();
+        await db.exec(
           `CREATE VIRTUAL TABLE IF NOT EXISTS vec_memories USING vec0(embedding ${vecColumnType(dim, q)})`,
         );
-        setMemoryVecMeta({ vecLoaded: true, activeDim: dim });
+        await setMemoryVecMeta({ vecLoaded: true, activeDim: dim });
         return { ready: true, reason: `vec_memories created with dim=${dim} (${q})` };
       } catch (err: unknown) {
         const msg = sanitizeErrorMessage(err instanceof Error ? err.message : String(err));
@@ -173,12 +173,13 @@ class VectorStoreImpl implements VectorStore {
   }
 
   async upsertVector(memoryId: string, vector: Float32Array): Promise<void> {
-    const db = getDbInstance();
+    const db = getDbClient();
 
     // Map UUID memoryId → INTEGER rowid (the rowid is used as the FK into vec_memories).
-    const row = db.prepare("SELECT rowid FROM memories WHERE id = ?").get(memoryId) as
-      | { rowid: number }
-      | undefined;
+    const row = await db.get<{ rowid: number }>(
+      "SELECT rowid FROM memories WHERE id = ?",
+      memoryId
+    );
 
     if (!row) {
       throw new Error(`memory not found: ${memoryId}`);
@@ -187,19 +188,21 @@ class VectorStoreImpl implements VectorStore {
     // vec0 v0.1.9 requires BigInt for explicit rowid insertion — plain numbers are rejected.
     // INSERT OR REPLACE is not supported by vec0 — use DELETE + INSERT for upsert semantics.
     // int8 tables quantize the float32 blob in SQL (vec_quantize_int8); float32 bind raw.
-    const q = liveVecQuantization();
-    db.prepare("DELETE FROM vec_memories WHERE rowid = ?").run(BigInt(row.rowid));
-    db.prepare(`INSERT INTO vec_memories(rowid, embedding) VALUES (?, ${vecValueExpr(q)})`).run(
+    const q = await liveVecQuantization();
+    await db.run("DELETE FROM vec_memories WHERE rowid = ?", BigInt(row.rowid));
+    await db.run(
+      `INSERT INTO vec_memories(rowid, embedding) VALUES (?, ${vecValueExpr(q)})`,
       BigInt(row.rowid),
       encodeVector(vector),
     );
   }
 
   async deleteVector(memoryId: string): Promise<void> {
-    const db = getDbInstance();
-    db.prepare(
+    const db = getDbClient();
+    await db.run(
       "DELETE FROM vec_memories WHERE rowid = (SELECT rowid FROM memories WHERE id = ?)",
-    ).run(memoryId);
+      memoryId
+    );
   }
 
   async searchVector(
@@ -207,24 +210,23 @@ class VectorStoreImpl implements VectorStore {
     topK: number,
     apiKeyId?: string,
   ): Promise<VectorSearchHit[]> {
-    const db = getDbInstance();
+    const db = getDbClient();
     const k = topK > 0 ? topK : TOP_K_DEFAULT;
 
-    const q = liveVecQuantization();
-    const rows = db
-      .prepare(
-        `SELECT m.id AS memory_id, v.distance
-         FROM vec_memories v
-         JOIN memories m ON m.rowid = v.rowid
-         WHERE v.embedding MATCH ${vecValueExpr(q)}
-           AND ($apiKeyId IS NULL OR m.api_key_id = $apiKeyId)
-           AND k = ?
-         ORDER BY v.distance ASC`,
-      )
-      .all(encodeVector(vector), { apiKeyId: apiKeyId ?? null }, k) as Array<{
-        memory_id: string;
-        distance: number;
-      }>;
+    const q = await liveVecQuantization();
+    const rows = await db.all<{ memory_id: string; distance: number }>(
+      `SELECT m.id AS memory_id, v.distance
+       FROM vec_memories v
+       JOIN memories m ON m.rowid = v.rowid
+       WHERE v.embedding MATCH ${vecValueExpr(q)}
+         AND (? IS NULL OR m.api_key_id = ?)
+         AND k = ?
+       ORDER BY v.distance ASC`,
+      encodeVector(vector),
+      apiKeyId ?? null,
+      apiKeyId ?? null,
+      k,
+    );
 
     return rows.map((r) => ({
       memoryId: r.memory_id,
@@ -239,73 +241,74 @@ class VectorStoreImpl implements VectorStore {
     topK: number,
     apiKeyId?: string,
   ): Promise<HybridRrfHit[]> {
-    const db = getDbInstance();
+    const db = getDbClient();
     const k = topK > 0 ? topK : TOP_K_DEFAULT;
     const rrfK = RRF_K;
-    const q = liveVecQuantization();
+    const q = await liveVecQuantization();
+    const apiKeyParam = apiKeyId ?? null;
 
     // SQLite does not support FULL OUTER JOIN — use UNION ALL + GROUP BY (RRF recipe).
     // Reference: https://alexgarcia.xyz/blog/2024/sqlite-vec-hybrid-search/
-    const rows = db
-      .prepare(
-        `WITH vec_results AS (
-           SELECT m.id AS memory_id,
-                  ROW_NUMBER() OVER (ORDER BY v.distance ASC) AS vec_rank,
-                  v.distance AS vec_distance
-           FROM vec_memories v
-           JOIN memories m ON m.rowid = v.rowid
-           WHERE v.embedding MATCH ${vecValueExpr(q)}
-             AND ($apiKeyId IS NULL OR m.api_key_id = $apiKeyId)
-             AND k = ?
-         ),
-         fts_results AS (
-           SELECT m.id AS memory_id,
-                  ROW_NUMBER() OVER (ORDER BY fts.rank ASC) AS fts_rank,
-                  fts.rank AS fts_score
-           FROM memory_fts fts
-           JOIN memories m ON m.memory_id = fts.rowid
-           WHERE fts.memory_fts MATCH ?
-             AND ($apiKeyId IS NULL OR m.api_key_id = $apiKeyId)
-           LIMIT ?
-         ),
-         fused AS (
-           SELECT
-             memory_id,
-             MAX(vec_rank)      AS vec_rank,
-             MAX(fts_rank)      AS fts_rank,
-             MAX(vec_distance)  AS vec_distance,
-             MAX(fts_score)     AS fts_score,
-             SUM(rrf_contrib)   AS rrf_score
-           FROM (
-             SELECT memory_id, vec_rank, NULL AS fts_rank, vec_distance,
-                    NULL AS fts_score, 1.0 / (${rrfK} + vec_rank) AS rrf_contrib
-             FROM vec_results
-             UNION ALL
-             SELECT memory_id, NULL, fts_rank, NULL, fts_score, 1.0 / (${rrfK} + fts_rank)
-             FROM fts_results
-           )
-           GROUP BY memory_id
+    const rows = await db.all<{
+      memory_id: string;
+      vec_rank: number | null;
+      fts_rank: number | null;
+      vec_distance: number | null;
+      fts_score: number | null;
+      rrf_score: number;
+    }>(
+      `WITH vec_results AS (
+         SELECT m.id AS memory_id,
+                ROW_NUMBER() OVER (ORDER BY v.distance ASC) AS vec_rank,
+                v.distance AS vec_distance
+         FROM vec_memories v
+         JOIN memories m ON m.rowid = v.rowid
+         WHERE v.embedding MATCH ${vecValueExpr(q)}
+           AND (? IS NULL OR m.api_key_id = ?)
+           AND k = ?
+       ),
+       fts_results AS (
+         SELECT m.id AS memory_id,
+                ROW_NUMBER() OVER (ORDER BY fts.rank ASC) AS fts_rank,
+                fts.rank AS fts_score
+         FROM memory_fts fts
+         JOIN memories m ON m.memory_id = fts.rowid
+         WHERE fts.memory_fts MATCH ?
+           AND (? IS NULL OR m.api_key_id = ?)
+         LIMIT ?
+       ),
+       fused AS (
+         SELECT
+           memory_id,
+           MAX(vec_rank)      AS vec_rank,
+           MAX(fts_rank)      AS fts_rank,
+           MAX(vec_distance)  AS vec_distance,
+           MAX(fts_score)     AS fts_score,
+           SUM(rrf_contrib)   AS rrf_score
+         FROM (
+           SELECT memory_id, vec_rank, NULL AS fts_rank, vec_distance,
+                  NULL AS fts_score, 1.0 / (${rrfK} + vec_rank) AS rrf_contrib
+           FROM vec_results
+           UNION ALL
+           SELECT memory_id, NULL, fts_rank, NULL, fts_score, 1.0 / (${rrfK} + fts_rank)
+           FROM fts_results
          )
-         SELECT memory_id, vec_rank, fts_rank, vec_distance, fts_score, rrf_score
-         FROM fused
-         ORDER BY rrf_score DESC
-         LIMIT ?`,
-      )
-      .all(
-        encodeVector(vector),
-        { apiKeyId: apiKeyId ?? null },
-        k,
-        queryText,
-        k,
-        k,
-      ) as Array<{
-        memory_id: string;
-        vec_rank: number | null;
-        fts_rank: number | null;
-        vec_distance: number | null;
-        fts_score: number | null;
-        rrf_score: number;
-      }>;
+         GROUP BY memory_id
+       )
+       SELECT memory_id, vec_rank, fts_rank, vec_distance, fts_score, rrf_score
+       FROM fused
+       ORDER BY rrf_score DESC
+       LIMIT ?`,
+      encodeVector(vector),
+      apiKeyParam,
+      apiKeyParam,
+      k,
+      queryText,
+      apiKeyParam,
+      apiKeyParam,
+      k,
+      k,
+    );
 
     return rows.map((r) => ({
       memoryId: r.memory_id,
@@ -325,18 +328,16 @@ class VectorStoreImpl implements VectorStore {
   }> {
     let rowCount = 0;
     try {
-      const db = getDbInstance();
-      const row = db.prepare("SELECT COUNT(*) AS cnt FROM vec_memories").get() as
-        | { cnt: number }
-        | undefined;
+      const db = getDbClient();
+      const row = await db.get<{ cnt: number }>("SELECT COUNT(*) AS cnt FROM vec_memories");
       rowCount = row?.cnt ?? 0;
     } catch {
       // vec_memories may not exist yet — not an error, just 0 rows.
       rowCount = 0;
     }
 
-    const needsReindex = countMemoryReindexPending();
-    const meta = getMemoryVecMeta();
+    const needsReindex = await countMemoryReindexPending();
+    const meta = await getMemoryVecMeta();
 
     return {
       rowCount,
@@ -347,16 +348,16 @@ class VectorStoreImpl implements VectorStore {
   }
 
   async resetForSignature(signature: string, dim: number): Promise<void> {
-    const db = getDbInstance();
+    const db = getDbClient();
     // The column type follows the mode encoded in the (effective) signature.
     const q = storedVecQuantization(signature);
 
     // DROP + CREATE is intentionally destructive — triggers lazy backfill via F5.
-    db.exec("DROP TABLE IF EXISTS vec_memories");
-    db.exec(`CREATE VIRTUAL TABLE vec_memories USING vec0(embedding ${vecColumnType(dim, q)})`);
+    await db.exec("DROP TABLE IF EXISTS vec_memories");
+    await db.exec(`CREATE VIRTUAL TABLE vec_memories USING vec0(embedding ${vecColumnType(dim, q)})`);
 
-    markAllMemoriesNeedReindex();
-    setMemoryVecMeta({
+    await markAllMemoriesNeedReindex();
+    await setMemoryVecMeta({
       activeDim: dim,
       embeddingSignature: signature,
       lastResetAt: new Date().toISOString(),
@@ -388,8 +389,8 @@ export function getVectorStore(): VectorStore | null {
     return null;
   }
 
-  const db = getDbInstance();
-  const raw = db.raw as { loadExtension?: (path: string) => void } | null;
+  const adapter = getDbInstance();
+  const raw = adapter.raw as { loadExtension?: (path: string) => void } | null;
 
   // sqlite-vec must be loaded as a native extension on the better-sqlite3 raw handle.
   // The SqliteAdapter wrapper does not expose loadExtension directly.

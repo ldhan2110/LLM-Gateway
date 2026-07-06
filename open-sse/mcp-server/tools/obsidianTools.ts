@@ -281,7 +281,7 @@ export const obsidianTools = [
     scopes: ["read:obsidian"],
     inputSchema: z.object({}),
     handler: async (_args: unknown, extra?: McpExtra) => {
-      const token = getSyncToken() || requireToken(extractApiKeyId(extra));
+      const token = (await getSyncToken()) || requireToken(extractApiKeyId(extra));
       const syncClient = createSyncServerClient(token);
       return syncClient.getStatus();
     },
@@ -292,7 +292,7 @@ export const obsidianTools = [
     scopes: ["write:obsidian"],
     inputSchema: z.object({}),
     handler: async (_args: unknown, extra?: McpExtra) => {
-      const token = getSyncToken() || requireToken(extractApiKeyId(extra));
+      const token = (await getSyncToken()) || requireToken(extractApiKeyId(extra));
       const syncClient = createSyncServerClient(token);
       const result = await syncClient.triggerSync();
       return { success: true, ...result };
@@ -304,7 +304,7 @@ export const obsidianTools = [
     scopes: ["read:obsidian"],
     inputSchema: z.object({}),
     handler: async (_args: unknown, extra?: McpExtra) => {
-      const token = getSyncToken() || requireToken(extractApiKeyId(extra));
+      const token = (await getSyncToken()) || requireToken(extractApiKeyId(extra));
       const syncClient = createSyncServerClient(token);
       return syncClient.getConflicts();
     },
@@ -318,7 +318,7 @@ export const obsidianTools = [
       resolution: z.enum(["local", "remote", "keep-both"]).describe("Which version to keep: local (mobile), remote (desktop), or keep-both"),
     }),
     handler: async (args: { path: string; resolution: "local" | "remote" | "keep-both" }, extra?: McpExtra) => {
-      const token = getSyncToken() || requireToken(extractApiKeyId(extra));
+      const token = (await getSyncToken()) || requireToken(extractApiKeyId(extra));
       const syncClient = createSyncServerClient(token);
       const result = await syncClient.resolveConflict(args.path, args.resolution);
       return { success: true, result };

@@ -312,7 +312,7 @@ test("#3500 deleteSemanticCacheByModel — deletes all entries for the given mod
 // proxyLogs — exportProxyLogsSince
 // ===========================================================================
 
-test("#3500 exportProxyLogsSince — returns rows with timestamp >= since", () => {
+test("#3500 exportProxyLogsSince — returns rows with timestamp >= since", async () => {
   const base = new Date("2025-01-15T10:00:00.000Z");
   const old = new Date("2025-01-14T10:00:00.000Z");
 
@@ -320,7 +320,7 @@ test("#3500 exportProxyLogsSince — returns rows with timestamp >= since", () =
   insertProxyLog({ id: "pl-new-2", timestamp: new Date("2025-01-15T12:00:00.000Z").toISOString(), provider: "anthropic" });
   insertProxyLog({ id: "pl-old-1", timestamp: old.toISOString(), provider: "openai" }); // outside window
 
-  const rows = proxyLogs.exportProxyLogsSince(base.toISOString());
+  const rows = await proxyLogs.exportProxyLogsSince(base.toISOString());
 
   assert.ok(Array.isArray(rows), "result is array");
   const ids = rows.map((r) => (r as { id: string }).id);
@@ -329,8 +329,8 @@ test("#3500 exportProxyLogsSince — returns rows with timestamp >= since", () =
   assert.ok(!ids.includes("pl-old-1"), "pl-old-1 excluded (before since)");
 });
 
-test("#3500 exportProxyLogsSince — results are ordered descending by timestamp", () => {
-  const rows = proxyLogs.exportProxyLogsSince(new Date("2025-01-01T00:00:00.000Z").toISOString());
+test("#3500 exportProxyLogsSince — results are ordered descending by timestamp", async () => {
+  const rows = await proxyLogs.exportProxyLogsSince(new Date("2025-01-01T00:00:00.000Z").toISOString());
   assert.ok(rows.length >= 2, "at least 2 rows");
 
   // Verify descending order
@@ -341,8 +341,8 @@ test("#3500 exportProxyLogsSince — results are ordered descending by timestamp
   }
 });
 
-test("#3500 exportProxyLogsSince — returns empty array when no rows match", () => {
+test("#3500 exportProxyLogsSince — returns empty array when no rows match", async () => {
   const future = new Date(Date.now() + 86_400_000 * 365).toISOString();
-  const rows = proxyLogs.exportProxyLogsSince(future);
+  const rows = await proxyLogs.exportProxyLogsSince(future);
   assert.deepEqual(rows, []);
 });

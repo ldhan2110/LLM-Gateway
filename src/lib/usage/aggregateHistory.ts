@@ -5,7 +5,7 @@
  * @module lib/usage/aggregateHistory
  */
 
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 import { getUserDatabaseSettings } from "../db/databaseSettings";
 
 interface AggregationResult {
@@ -26,7 +26,7 @@ export async function rollupDailyUsage(
   fromDate: string,
   toDate: string
 ): Promise<AggregationResult> {
-  const db = getDbInstance();
+  const db = getDbClient();
 
   const result: AggregationResult = {
     processed: 0,
@@ -38,7 +38,7 @@ export async function rollupDailyUsage(
     // Aggregate quota_snapshots by provider, model, and date
     const aggregateQuery = `
       INSERT INTO daily_usage_summary (provider, model, date, total_requests, total_input_tokens, total_output_tokens, total_cost)
-      SELECT 
+      SELECT
         provider,
         COALESCE(json_extract(raw_data, '$.model'), 'unknown') as model,
         DATE(created_at) as date,
@@ -56,8 +56,7 @@ export async function rollupDailyUsage(
         total_cost = excluded.total_cost
     `;
 
-    const stmt = db.prepare(aggregateQuery);
-    const runResult = stmt.run(fromDate, toDate);
+    const runResult = await db.run(aggregateQuery, fromDate, toDate);
 
     result.processed = runResult.changes;
     result.inserted = runResult.changes;
@@ -83,7 +82,7 @@ export async function rollupHourlyQuota(
   fromDate: string,
   toDate: string
 ): Promise<AggregationResult> {
-  const db = getDbInstance();
+  const db = getDbClient();
 
   const result: AggregationResult = {
     processed: 0,
@@ -95,7 +94,7 @@ export async function rollupHourlyQuota(
     // Aggregate quota_snapshots by provider, model, and hour
     const aggregateQuery = `
       INSERT INTO hourly_usage_summary (provider, model, date_hour, total_requests, total_input_tokens, total_output_tokens, total_cost)
-      SELECT 
+      SELECT
         provider,
         COALESCE(json_extract(raw_data, '$.model'), 'unknown') as model,
         datetime(strftime('%Y-%m-%d %H:00:00', created_at)) as date_hour,
@@ -113,8 +112,7 @@ export async function rollupHourlyQuota(
         total_cost = excluded.total_cost
     `;
 
-    const stmt = db.prepare(aggregateQuery);
-    const runResult = stmt.run(fromDate, toDate);
+    const runResult = await db.run(aggregateQuery, fromDate, toDate);
 
     result.processed = runResult.changes;
     result.inserted = runResult.changes;
@@ -142,7 +140,7 @@ export async function rollupHourlyQuota(
  * @returns Aggregation result with counts
  */
 export async function rollupUsageHistoryBeforeDate(beforeDate: string): Promise<AggregationResult> {
-  const db = getDbInstance();
+  const db = getDbClient();
 
   const result: AggregationResult = {
     processed: 0,
@@ -172,8 +170,7 @@ export async function rollupUsageHistoryBeforeDate(beforeDate: string): Promise<
         total_output_tokens = daily_usage_summary.total_output_tokens + excluded.total_output_tokens
     `;
 
-    const stmt = db.prepare(aggregateQuery);
-    const runResult = stmt.run(beforeDate);
+    const runResult = await db.run(aggregateQuery, beforeDate);
 
     result.processed = runResult.changes;
     result.inserted = runResult.changes;
@@ -196,7 +193,7 @@ export async function rollupUsageHistoryBeforeDate(beforeDate: string): Promise<
  * @returns ISO date string (YYYY-MM-DD)
  */
 export async function getRawDataCutoffDate(): Promise<string> {
-  const rawDataRetentionDays = getUserDatabaseSettings().aggregation.rawDataRetentionDays;
+  const rawDataRetentionDays = (await getUserDatabaseSettings()).aggregation.rawDataRetentionDays;
 
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - rawDataRetentionDays);
@@ -208,5 +205,5 @@ export async function getRawDataCutoffDate(): Promise<string> {
  * Check if aggregation is enabled in settings.
  */
 export async function isAggregationEnabled(): Promise<boolean> {
-  return getUserDatabaseSettings().aggregation.enabled;
+  return (await getUserDatabaseSettings()).aggregation.enabled;
 }

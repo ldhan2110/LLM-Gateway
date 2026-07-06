@@ -1,4 +1,4 @@
-import { getDbInstance, rowToCamel } from "./core";
+import { getDbClient, rowToCamel } from "./core";
 
 export interface HandoffPayload {
   id?: string;
@@ -19,15 +19,6 @@ export interface HandoffPayload {
 }
 
 type JsonRecord = Record<string, unknown>;
-
-interface StatementLike<TRow = unknown> {
-  get: (...params: unknown[]) => TRow | undefined;
-  run: (...params: unknown[]) => { changes: number };
-}
-
-interface DbLike {
-  prepare: <TRow = unknown>(sql: string) => StatementLike<TRow>;
-}
 
 const CLEANUP_THROTTLE_MS = 30 * 60 * 1000;
 
@@ -77,11 +68,11 @@ function toHandoffPayload(row: unknown): HandoffPayload | null {
   };
 }
 
-export function upsertHandoff(payload: HandoffPayload): void {
-  const db = getDbInstance() as unknown as DbLike;
+export async function upsertHandoff(payload: HandoffPayload): Promise<void> {
+  const db = getDbClient();
   const createdAt = new Date().toISOString();
 
-  db.prepare(
+  await db.run(
     `INSERT INTO context_handoffs
       (session_id, combo_name, from_account, summary, key_decisions,
        task_progress, active_entities, message_count, model, last_model,
@@ -99,8 +90,7 @@ export function upsertHandoff(payload: HandoffPayload): void {
        warning_threshold_pct = excluded.warning_threshold_pct,
        generated_at = excluded.generated_at,
        expires_at = excluded.expires_at,
-       created_at = excluded.created_at`
-  ).run(
+       created_at = excluded.created_at`,
     payload.sessionId,
     payload.comboName,
     payload.fromAccount,
@@ -118,57 +108,64 @@ export function upsertHandoff(payload: HandoffPayload): void {
   );
 }
 
-export function getHandoff(sessionId: string, comboName: string): HandoffPayload | null {
-  const db = getDbInstance() as unknown as DbLike;
+export async function getHandoff(
+  sessionId: string,
+  comboName: string
+): Promise<HandoffPayload | null> {
+  const db = getDbClient();
   const now = new Date().toISOString();
-  const row = db
-    .prepare(
-      `SELECT *
+  const row = await db.get(
+    `SELECT *
        FROM context_handoffs
        WHERE session_id = ? AND combo_name = ? AND expires_at > ?
        ORDER BY created_at DESC
-       LIMIT 1`
-    )
-    .get(sessionId, comboName, now);
+       LIMIT 1`,
+    sessionId,
+    comboName,
+    now
+  );
 
   return toHandoffPayload(row);
 }
 
-export function deleteHandoff(sessionId: string, comboName: string): void {
-  const db = getDbInstance() as unknown as DbLike;
-  db.prepare("DELETE FROM context_handoffs WHERE session_id = ? AND combo_name = ?").run(
+export async function deleteHandoff(sessionId: string, comboName: string): Promise<void> {
+  const db = getDbClient();
+  await db.run(
+    "DELETE FROM context_handoffs WHERE session_id = ? AND combo_name = ?",
     sessionId,
     comboName
   );
 }
 
-export function cleanupExpiredHandoffs(): number {
+export async function cleanupExpiredHandoffs(): Promise<number> {
   const nowMs = Date.now();
   if (nowMs - lastCleanupAt < CLEANUP_THROTTLE_MS) {
     return 0;
   }
 
-  const db = getDbInstance() as unknown as DbLike;
+  const db = getDbClient();
   const now = new Date(nowMs).toISOString();
-  const result = db.prepare("DELETE FROM context_handoffs WHERE expires_at <= ?").run(now);
+  const result = await db.run("DELETE FROM context_handoffs WHERE expires_at <= ?", now);
   lastCleanupAt = nowMs;
-  return result.changes;
+  return Number(result.changes || 0);
 }
 
-export function hasActiveHandoff(sessionId: string, comboName: string): boolean {
-  const db = getDbInstance() as unknown as DbLike;
+export async function hasActiveHandoff(sessionId: string, comboName: string): Promise<boolean> {
+  const db = getDbClient();
   const now = new Date().toISOString();
-  const row = db
-    .prepare(
-      `SELECT 1
+  const row = await db.get(
+    `SELECT 1
        FROM context_handoffs
        WHERE session_id = ? AND combo_name = ? AND expires_at > ?
-       LIMIT 1`
-    )
-    .get(sessionId, comboName, now);
+       LIMIT 1`,
+    sessionId,
+    comboName,
+    now
+  );
 
   return !!row;
 }
+
 /**
  * Record a model usage entry for a session/combo combination.
  * Used by context-relay to track which models have been active.
@@ -179,19 +176,24 @@ export function hasActiveHandoff(sessionId: string, comboName: string): boolean 
  * @param provider - The provider identifier.
  * @param connectionId - Optional connection ID used.
  */
-export function recordSessionModelUsage(
+export async function recordSessionModelUsage(
   sessionId: string,
   comboName: string,
   modelStr: string,
   provider: string,
   connectionId?: string
-): void {
-  const db = getDbInstance() as unknown as DbLike;
-  db.prepare(
+): Promise<void> {
+  const db = getDbClient();
+  await db.run(
     `INSERT INTO session_model_history
       (session_id, combo_name, model_str, provider, connection_id)
-     VALUES (?, ?, ?, ?, ?)`
-  ).run(sessionId, comboName, modelStr, provider, connectionId || null);
+     VALUES (?, ?, ?, ?, ?)`,
+    sessionId,
+    comboName,
+    modelStr,
+    provider,
+    connectionId || null
+  );
 }
 
 /**
@@ -202,17 +204,20 @@ export function recordSessionModelUsage(
  * @param comboName - The combo name.
  * @returns The model string, or null if no record exists.
  */
-export function getLastSessionModel(sessionId: string, comboName: string): string | null {
-  const db = getDbInstance() as unknown as DbLike;
-  const row = db
-    .prepare(
-      `SELECT model_str
+export async function getLastSessionModel(
+  sessionId: string,
+  comboName: string
+): Promise<string | null> {
+  const db = getDbClient();
+  const row = await db.get<{ model_str: string }>(
+    `SELECT model_str
        FROM session_model_history
        WHERE session_id = ? AND combo_name = ?
        ORDER BY used_at DESC, id DESC
-       LIMIT 1`
-    )
-    .get(sessionId, comboName) as { model_str: string } | undefined;
+       LIMIT 1`,
+    sessionId,
+    comboName
+  );
 
   return row?.model_str ?? null;
 }

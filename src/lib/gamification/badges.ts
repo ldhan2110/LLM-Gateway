@@ -312,21 +312,21 @@ type BadgeCriteria =
  * Get the total count of a specific action for an API key from the XP audit log.
  */
 async function getActionCount(apiKeyId: string, action: string): Promise<number> {
-  const { getDbInstance } = await import("../db/core");
-  const db = getDbInstance();
+  const { getDbClient } = await import("../db/core");
+  const db = getDbClient();
 
-  const row = db
-    .prepare(
-      `SELECT COALESCE(SUM(
-        CASE WHEN metadata IS NOT NULL
-          THEN CAST(json_extract(metadata, '$.amount') AS INTEGER)
-          ELSE 1
-        END
-      ), 0) AS total
-      FROM xp_audit_log
-      WHERE api_key_id = ? AND action = ?`
-    )
-    .get(apiKeyId, action) as { total: number } | undefined;
+  const row = await db.get<{ total: number }>(
+    `SELECT COALESCE(SUM(
+      CASE WHEN metadata IS NOT NULL
+        THEN CAST(json_extract(metadata, '$.amount') AS INTEGER)
+        ELSE 1
+      END
+    ), 0) AS total
+    FROM xp_audit_log
+    WHERE api_key_id = ? AND action = ?`,
+    apiKeyId,
+    action
+  );
 
   return row?.total ?? 0;
 }
@@ -338,16 +338,16 @@ async function getActionCount(apiKeyId: string, action: string): Promise<number>
  * from the XP audit log metadata.
  */
 async function getUniqueCount(apiKeyId: string, type: string): Promise<number> {
-  const { getDbInstance } = await import("../db/core");
-  const db = getDbInstance();
+  const { getDbClient } = await import("../db/core");
+  const db = getDbClient();
 
-  const row = db
-    .prepare(
-      `SELECT COUNT(DISTINCT json_extract(metadata, '$.' || ?)) AS total
-      FROM xp_audit_log
-      WHERE api_key_id = ? AND metadata IS NOT NULL`
-    )
-    .get(type, apiKeyId) as { total: number } | undefined;
+  const row = await db.get<{ total: number }>(
+    `SELECT COUNT(DISTINCT json_extract(metadata, '$.' || ?)) AS total
+    FROM xp_audit_log
+    WHERE api_key_id = ? AND metadata IS NOT NULL`,
+    type,
+    apiKeyId
+  );
 
   return row?.total ?? 0;
 }
@@ -371,18 +371,22 @@ async function getStreak(apiKeyId: string): Promise<number> {
  * Rank = number of users with a higher score + 1.
  */
 async function getRank(apiKeyId: string, scope: string): Promise<number> {
-  const { getDbInstance } = await import("../db/core");
-  const db = getDbInstance();
+  const { getDbClient } = await import("../db/core");
+  const db = getDbClient();
 
-  const scoreRow = db
-    .prepare("SELECT score FROM leaderboard WHERE api_key_id = ? AND scope = ?")
-    .get(apiKeyId, scope) as { score: number } | undefined;
+  const scoreRow = await db.get<{ score: number }>(
+    "SELECT score FROM leaderboard WHERE api_key_id = ? AND scope = ?",
+    apiKeyId,
+    scope
+  );
 
   if (!scoreRow) return Infinity;
 
-  const rankRow = db
-    .prepare("SELECT COUNT(*) AS rank FROM leaderboard WHERE scope = ? AND score > ?")
-    .get(scope, scoreRow.score) as { rank: number } | undefined;
+  const rankRow = await db.get<{ rank: number }>(
+    "SELECT COUNT(*) AS rank FROM leaderboard WHERE scope = ? AND score > ?",
+    scope,
+    scoreRow.score
+  );
 
   return (rankRow?.rank ?? 0) + 1;
 }
@@ -409,8 +413,8 @@ export async function evaluateBadges(
   // Import DB functions dynamically to avoid circular deps
   const { getBadgeDefinitions, unlockBadge, getBadges } = await import("../db/gamification");
 
-  const definitions = getBadgeDefinitions();
-  const earned = getBadges(apiKeyId);
+  const definitions = await getBadgeDefinitions();
+  const earned = await getBadges(apiKeyId);
   const earnedIds = new Set(earned.map((b) => b.badgeId));
   const newlyUnlocked: string[] = [];
 
@@ -474,12 +478,13 @@ export async function evaluateBadges(
 
       case "first": {
         // Time-limited badge: check if user joined within window
-        const { getDbInstance } = await import("../db/core");
-        const db = getDbInstance();
+        const { getDbClient } = await import("../db/core");
+        const db = getDbClient();
 
-        const firstLog = db
-          .prepare(`SELECT MIN(created_at) AS first_at FROM xp_audit_log WHERE api_key_id = ?`)
-          .get(apiKeyId) as { first_at: string | null } | undefined;
+        const firstLog = await db.get<{ first_at: string | null }>(
+          `SELECT MIN(created_at) AS first_at FROM xp_audit_log WHERE api_key_id = ?`,
+          apiKeyId
+        );
 
         if (firstLog?.first_at) {
           const joinDate = new Date(firstLog.first_at);
@@ -502,7 +507,7 @@ export async function evaluateBadges(
     }
 
     if (unlocked) {
-      unlockBadge(apiKeyId, def.id);
+      await unlockBadge(apiKeyId, def.id);
       newlyUnlocked.push(def.id);
     }
   }
@@ -515,17 +520,14 @@ export async function evaluateBadges(
  * Idempotent — uses INSERT OR IGNORE so existing badges are not overwritten.
  */
 export async function seedBuiltinBadges(): Promise<void> {
-  const { getDbInstance } = await import("../db/core");
-  const db = getDbInstance();
+  const { getDbClient } = await import("../db/core");
+  const db = getDbClient();
 
-  const insert = db.prepare(
-    `INSERT OR IGNORE INTO badge_definitions (id, name, description, icon, category, rarity, criteria, hidden)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-
-  const insertMany = db.transaction((badges: typeof BUILTIN_BADGES) => {
-    for (const badge of badges) {
-      insert.run(
+  await db.transaction(async (c) => {
+    for (const badge of BUILTIN_BADGES) {
+      await c.run(
+        `INSERT OR IGNORE INTO badge_definitions (id, name, description, icon, category, rarity, criteria, hidden)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         badge.id,
         badge.name,
         badge.description,
@@ -537,6 +539,4 @@ export async function seedBuiltinBadges(): Promise<void> {
       );
     }
   });
-
-  insertMany(BUILTIN_BADGES);
 }

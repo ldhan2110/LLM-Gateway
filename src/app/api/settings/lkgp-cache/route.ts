@@ -7,7 +7,7 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   try {
-    clearAllLKGP();
+    await clearAllLKGP();
     return NextResponse.json({ cleared: true });
   } catch (err: unknown) {
     const error = err instanceof Error ? err.message : String(err);

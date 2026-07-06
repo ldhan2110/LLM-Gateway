@@ -1,6 +1,6 @@
 import { getCostSummary } from "@/domain/costRules";
 import { getApiKeys } from "@/lib/db/apiKeys";
-import { getDbInstance } from "@/lib/db/core";
+import { getDbClient } from "@/lib/db/core";
 import { getAllProviderLimitsCache, getProviderLimitsCache } from "@/lib/db/providerLimits";
 import { getProviderQuotaWindowStart } from "@/lib/db/quotaResetEvents";
 import { calculateCost } from "@/lib/usage/costCalculator";
@@ -115,14 +115,14 @@ function parseResetAt(value: unknown, nowMs: number): number | null {
   return parsed;
 }
 
-function getProviderWindowStart(
+async function getProviderWindowStart(
   connectionId: string | null,
   resetMs: number,
   nowMs: number
-): { startMs: number; source: ProviderWindowCostBreakdown["windowStartSource"] } | null {
+): Promise<{ startMs: number; source: ProviderWindowCostBreakdown["windowStartSource"] } | null> {
   if (!connectionId) return null;
   const resetIso = new Date(resetMs).toISOString();
-  const start = getProviderQuotaWindowStart(connectionId, resetIso, nowMs);
+  const start = await getProviderQuotaWindowStart(connectionId, resetIso, nowMs);
   if (!start) return null;
   const startMs = Date.parse(start.windowStartIso);
   if (!Number.isFinite(startMs)) return null;
@@ -161,11 +161,11 @@ function scoreWeeklyQuota(name: string): number {
   return score;
 }
 
-function selectWeeklyWindow(
+async function selectWeeklyWindow(
   provider: string,
   connectionId: string | null,
   nowMs: number
-): {
+): Promise<{
   startMs: number;
   resetMs: number | null;
   source: ProviderWindowCostBreakdown["windowSource"];
@@ -173,10 +173,10 @@ function selectWeeklyWindow(
   quotaUsedPercent: number | null;
   quotaRemainingPercent: number | null;
   windowStartSource: ProviderWindowCostBreakdown["windowStartSource"];
-} {
+}> {
   const cacheEntries = connectionId
-    ? [[connectionId, getProviderLimitsCache(connectionId)] as const]
-    : Object.entries(getAllProviderLimitsCache());
+    ? [[connectionId, await getProviderLimitsCache(connectionId)] as const]
+    : Object.entries(await getAllProviderLimitsCache());
 
   let selected: {
     score: number;
@@ -216,7 +216,7 @@ function selectWeeklyWindow(
   }
 
   if (selected) {
-    const providerWindowStart = getProviderWindowStart(
+    const providerWindowStart = await getProviderWindowStart(
       selected.connectionId,
       selected.resetMs,
       nowMs
@@ -274,49 +274,33 @@ function uniqueApiKeyIds(rows: UsageCostRow[]): string[] {
   );
 }
 
-function appendNamedPlaceholders(
-  params: Record<string, unknown>,
-  prefix: string,
-  values: string[]
-): string {
-  return values
-    .map((value, index) => {
-      const key = `${prefix}${index}`;
-      params[key] = value;
-      return `@${key}`;
-    })
-    .join(", ");
-}
-
-function getRecordedCostsByApiKey(
+async function getRecordedCostsByApiKey(
   apiKeyIds: string[],
   sinceMs: number,
   untilMs: number
-): Map<string, RecordedCostRow[]> {
+): Promise<Map<string, RecordedCostRow[]>> {
   if (apiKeyIds.length === 0) return new Map();
 
   try {
-    const params: Record<string, unknown> = {
-      sinceMs: Math.max(0, sinceMs - RECORDED_COST_MATCH_TOLERANCE_MS),
-      untilMs: untilMs + RECORDED_COST_MATCH_TOLERANCE_MS,
-    };
-    const placeholders = appendNamedPlaceholders(params, "apiKey", apiKeyIds);
-    const rows = getDbInstance()
-      .prepare<RecordedCostRow>(
-        `
-        SELECT
-          id as rowId,
-          api_key_id as apiKeyId,
-          timestamp,
-          cost
-        FROM domain_cost_history
-        WHERE api_key_id IN (${placeholders})
-          AND timestamp >= @sinceMs
-          AND timestamp <= @untilMs
-        ORDER BY api_key_id ASC, timestamp ASC, rowid ASC
+    const db = getDbClient();
+    const sinceMsVal = Math.max(0, sinceMs - RECORDED_COST_MATCH_TOLERANCE_MS);
+    const untilMsVal = untilMs + RECORDED_COST_MATCH_TOLERANCE_MS;
+    const placeholders = apiKeyIds.map(() => "?").join(", ");
+    const rows = await db.all<RecordedCostRow>(
       `
-      )
-      .all(params);
+      SELECT
+        id as rowId,
+        api_key_id as apiKeyId,
+        timestamp,
+        cost
+      FROM domain_cost_history
+      WHERE api_key_id IN (${placeholders})
+        AND timestamp >= ?
+        AND timestamp <= ?
+      ORDER BY api_key_id ASC, timestamp ASC, rowid ASC
+      `,
+      ...apiKeyIds, sinceMsVal, untilMsVal
+    );
 
     const byApiKey = new Map<string, RecordedCostRow[]>();
     for (const row of rows) {
@@ -398,7 +382,7 @@ export async function getProviderWindowCostBreakdown({
 }): Promise<ProviderWindowCostBreakdown> {
   const providerKey = provider.trim().toLowerCase();
   const nowMs = Number.isFinite(now) ? now : Date.now();
-  const window = selectWeeklyWindow(providerKey, connectionId, nowMs);
+  const window = await selectWeeklyWindow(providerKey, connectionId, nowMs);
   const windowStartAt = new Date(window.startMs).toISOString();
   const windowResetAt = window.resetMs ? new Date(window.resetMs).toISOString() : null;
   const nowIso = new Date(nowMs).toISOString();
@@ -423,32 +407,31 @@ export async function getProviderWindowCostBreakdown({
     params.connectionId = connectionId;
   }
 
-  const usageRows = getDbInstance()
-    .prepare<UsageCostRow>(
-      `
-      SELECT
-        id,
-        NULLIF(api_key_id, '') as apiKeyId,
-        NULLIF(api_key_name, '') as apiKeyName,
-        LOWER(provider) as provider,
-        LOWER(model) as model,
-        COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
-        COALESCE(tokens_input, 0) as promptTokens,
-        COALESCE(tokens_output, 0) as completionTokens,
-        COALESCE(tokens_cache_read, 0) as cacheReadTokens,
-        COALESCE(tokens_cache_creation, 0) as cacheCreationTokens,
-        COALESCE(tokens_reasoning, 0) as reasoningTokens,
-        COALESCE(tokens_input + tokens_output, 0) as totalTokens,
-        timestamp
-      FROM usage_history
-      WHERE ${where.join(" AND ")}
-      ORDER BY timestamp ASC, id ASC
-      `
-    )
-    .all(params);
+  const usageRows = await getDbClient().all<UsageCostRow>(
+    `
+    SELECT
+      id,
+      NULLIF(api_key_id, '') as apiKeyId,
+      NULLIF(api_key_name, '') as apiKeyName,
+      LOWER(provider) as provider,
+      LOWER(model) as model,
+      COALESCE(NULLIF(service_tier, ''), 'standard') as serviceTier,
+      COALESCE(tokens_input, 0) as promptTokens,
+      COALESCE(tokens_output, 0) as completionTokens,
+      COALESCE(tokens_cache_read, 0) as cacheReadTokens,
+      COALESCE(tokens_cache_creation, 0) as cacheCreationTokens,
+      COALESCE(tokens_reasoning, 0) as reasoningTokens,
+      COALESCE(tokens_input + tokens_output, 0) as totalTokens,
+      timestamp
+    FROM usage_history
+    WHERE ${where.join(" AND ")}
+    ORDER BY timestamp ASC, id ASC
+    `,
+    params
+  );
 
   const currentApiKeyNames = await getCurrentApiKeyNames();
-  const recordedCostsByApiKey = getRecordedCostsByApiKey(
+  const recordedCostsByApiKey = await getRecordedCostsByApiKey(
     uniqueApiKeyIds(usageRows),
     window.startMs,
     nowMs

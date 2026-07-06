@@ -37,16 +37,16 @@ export async function emitGamificationEvent(params: {
     const xpAmount = getXpForAction(action);
     if (xpAmount > 0) {
       const { addXp } = await import("../db/gamification");
-      addXp(apiKeyId, action, xpAmount, metadata ? JSON.stringify(metadata) : undefined);
+      await addXp(apiKeyId, action, xpAmount, metadata ? JSON.stringify(metadata) : undefined);
 
       // Update level
       const { getXp, updateLevel } = await import("../db/gamification");
-      const xp = getXp(apiKeyId);
+      const xp = await getXp(apiKeyId);
       if (xp) {
         const { calculateLevel } = await import("./xp");
         const newLevel = calculateLevel(xp.totalXp);
         if (newLevel !== xp.currentLevel) {
-          updateLevel(apiKeyId, newLevel);
+          await updateLevel(apiKeyId, newLevel);
           log.info("events.level_up", { apiKeyId, oldLevel: xp.currentLevel, newLevel });
         }
       }
@@ -119,17 +119,15 @@ async function checkAndUnlockBadge(apiKeyId: string, badgeId: string): Promise<v
   // #3472: dedup via user_badges directly. getBadges() INNER-JOINs badge_definitions, which is
   // empty until seeded, so it falsely reported "not earned" and re-emitted the unlock event on
   // every request.
-  if (!hasBadge(apiKeyId, badgeId)) {
-    unlockBadge(apiKeyId, badgeId);
+  if (!(await hasBadge(apiKeyId, badgeId))) {
+    await unlockBadge(apiKeyId, badgeId);
     log.info("events.badge_unlocked", { apiKeyId, badgeId });
 
     // Look up badge details from badge_definitions
-    const { getDbInstance } = await import("../db/core");
-    const badgeRow = getDbInstance()
-      .prepare("SELECT name, description, icon, rarity FROM badge_definitions WHERE id = ?")
-      .get(badgeId) as
-      | { name: string; description: string | null; icon: string | null; rarity: string }
-      | undefined;
+    const { getDbClient } = await import("../db/core");
+    const badgeRow = await getDbClient().get<
+      { name: string; description: string | null; icon: string | null; rarity: string }
+    >("SELECT name, description, icon, rarity FROM badge_definitions WHERE id = ?", badgeId);
 
     // Record notification for SSE toast
     const { recordBadgeUnlock } = await import("./notifications");
@@ -148,17 +146,17 @@ async function checkAndUnlockBadge(apiKeyId: string, badgeId: string): Promise<v
  * Check action count badges after an action.
  */
 async function checkActionCountBadges(apiKeyId: string, action: string): Promise<void> {
-  const { getDbInstance } = await import("../db/core");
-  const db = getDbInstance();
+  const { getDbClient } = await import("../db/core");
+  const db = getDbClient();
 
   // Count total actions of this type
-  const row = db
-    .prepare(
-      "SELECT COALESCE(COUNT(*), 0) AS count FROM xp_audit_log WHERE api_key_id = ? AND action = ?"
-    )
-    .get(apiKeyId, action) as { count: number };
+  const row = await db.get<{ count: number }>(
+    "SELECT COALESCE(COUNT(*), 0) AS count FROM xp_audit_log WHERE api_key_id = ? AND action = ?",
+    apiKeyId,
+    action
+  );
 
-  const count = row.count;
+  const count = row?.count ?? 0;
 
   // Badge thresholds
   const thresholds: Record<string, Array<{ id: string; threshold: number }>> = {

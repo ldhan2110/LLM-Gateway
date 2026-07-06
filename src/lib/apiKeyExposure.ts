@@ -2,9 +2,9 @@ import { isApiKeyRevealEnabledFlag } from "@/shared/utils/featureFlags";
 
 const ENABLED_VALUES = new Set(["1", "true", "yes", "on"]);
 
-export function isApiKeyRevealEnabled(): boolean {
+export async function isApiKeyRevealEnabled(): Promise<boolean> {
   try {
-    return isApiKeyRevealEnabledFlag();
+    return await isApiKeyRevealEnabledFlag();
   } catch {
     const raw = String(process.env.ALLOW_API_KEY_REVEAL || "")
       .trim()

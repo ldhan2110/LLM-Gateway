@@ -75,7 +75,7 @@ await test("quota-division-blocks: countable-unit enforcement (block + allow)", 
       const KEY_B = "key-block-b1";
 
       // Seed plan: requests/hourly/limit=100
-      providerPlans.upsertPlan(
+      await providerPlans.upsertPlan(
         CONN,
         PROV,
         [{ unit: "requests", window: "hourly", limit: LIMIT }],
@@ -123,7 +123,7 @@ await test("quota-division-blocks: countable-unit enforcement (block + allow)", 
       const KEY_B = "key-allow-b1";
 
       // Seed plan for separate connection: requests/hourly/limit=100
-      providerPlans.upsertPlan(
+      await providerPlans.upsertPlan(
         CONN,
         PROV,
         [{ unit: "requests", window: "hourly", limit: LIMIT }],

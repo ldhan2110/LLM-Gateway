@@ -7,7 +7,7 @@
  * Pattern follows callLogs.js (T-15 decomposition).
  */
 import { v4 as uuidv4 } from "uuid";
-import { getDbInstance, isCloud, isBuildPhase } from "./db/core";
+import { getDbClient, isCloud, isBuildPhase } from "./db/core";
 
 const shouldPersistToDisk = !isCloud && !isBuildPhase;
 
@@ -60,13 +60,14 @@ const proxyLogs: ProxyLogEntry[] = [];
 
 // ──────────────── Startup: hydrate from DB ────────────────
 
-function loadFromDb() {
+async function loadFromDb() {
   if (!shouldPersistToDisk) return;
   try {
-    const db = getDbInstance();
-    const rows = db
-      .prepare("SELECT * FROM proxy_logs ORDER BY timestamp DESC LIMIT ?")
-      .all(MAX_IN_MEMORY_ENTRIES) as any[];
+    const db = getDbClient();
+    const rows = await db.all<any>(
+      "SELECT * FROM proxy_logs ORDER BY timestamp DESC LIMIT ?",
+      MAX_IN_MEMORY_ENTRIES
+    );
 
     for (const row of rows) {
       proxyLogs.push({
@@ -139,39 +140,36 @@ export function logProxyEvent(entry: ProxyLogInput) {
     proxyLogs.length = MAX_IN_MEMORY_ENTRIES;
   }
 
-  // 2. Persist to SQLite
+  // 2. Persist to SQLite (fire-and-forget)
   if (shouldPersistToDisk) {
-    try {
-      const db = getDbInstance();
-      db.prepare(
-        `INSERT INTO proxy_logs (id, timestamp, status, proxy_type, proxy_host, proxy_port,
+    const db = getDbClient();
+    db.run(
+      `INSERT INTO proxy_logs (id, timestamp, status, proxy_type, proxy_host, proxy_port,
           level, level_id, provider, target_url, public_ip, latency_ms, error,
           connection_id, combo_id, account, tls_fingerprint)
-        VALUES (@id, @timestamp, @status, @proxyType, @proxyHost, @proxyPort,
-          @level, @levelId, @provider, @targetUrl, @clientIp, @latencyMs, @error,
-          @connectionId, @comboId, @account, @tlsFingerprint)`
-      ).run({
-        id: log.id,
-        timestamp: log.timestamp,
-        status: log.status,
-        proxyType: log.proxy?.type || null,
-        proxyHost: log.proxy?.host || null,
-        proxyPort: log.proxy?.port ? Number(log.proxy.port) : null,
-        level: log.level,
-        levelId: log.levelId,
-        provider: log.provider,
-        targetUrl: log.targetUrl,
-        clientIp: log.clientIp,
-        latencyMs: log.latencyMs,
-        error: log.error,
-        connectionId: log.connectionId,
-        comboId: log.comboId,
-        account: log.account,
-        tlsFingerprint: log.tlsFingerprint ? 1 : 0,
-      });
-    } catch (err: any) {
+        VALUES (?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?)`,
+      log.id,
+      log.timestamp,
+      log.status,
+      log.proxy?.type ?? null,
+      log.proxy?.host ?? null,
+      log.proxy?.port != null ? Number(log.proxy.port) : null,
+      log.level,
+      log.levelId,
+      log.provider,
+      log.targetUrl,
+      log.clientIp,
+      log.latencyMs,
+      log.error,
+      log.connectionId,
+      log.comboId,
+      log.account,
+      log.tlsFingerprint ? 1 : 0
+    ).catch((err: any) => {
       console.warn("[proxyLogger] Failed to persist:", err.message);
-    }
+    });
   }
 
   return log;
@@ -230,11 +228,9 @@ export function clearProxyLogs() {
   proxyLogs.length = 0;
 
   if (shouldPersistToDisk) {
-    try {
-      const db = getDbInstance();
-      db.prepare("DELETE FROM proxy_logs").run();
-    } catch (err: any) {
+    const db = getDbClient();
+    db.run("DELETE FROM proxy_logs").catch((err: any) => {
       console.warn("[proxyLogger] Failed to clear DB:", err.message);
-    }
+    });
   }
 }

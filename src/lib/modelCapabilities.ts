@@ -10,7 +10,7 @@ import {
   getModelSpec,
   type ModelSpec,
 } from "@/shared/constants/modelSpecs";
-import { getSyncedCapability } from "@/lib/modelsDevSync";
+import { getSyncedCapabilitySync } from "@/lib/modelsDevSync";
 import { getModelContextOverride } from "@/lib/db/modelContextOverrides";
 import { isVisionModelId } from "@/shared/constants/visionModels";
 
@@ -43,7 +43,7 @@ type CapabilityInput =
       model?: string | null;
     };
 
-type SyncedCapabilities = ReturnType<typeof getSyncedCapability>;
+type SyncedCapabilities = ReturnType<typeof getSyncedCapabilitySync>;
 
 export interface ResolvedModelCapabilities {
   provider: string | null;
@@ -233,17 +233,17 @@ function getSyncedCapabilityForResolved(
 ): SyncedCapabilities {
   if (!provider || !model) return null;
 
-  const direct = getSyncedCapability(provider, model);
+  const direct = getSyncedCapabilitySync(provider, model);
   if (direct) return direct;
 
   if (rawModel && rawModel !== model) {
-    const raw = getSyncedCapability(provider, rawModel);
+    const raw = getSyncedCapabilitySync(provider, rawModel);
     if (raw) return raw;
   }
 
   const canonical = getStaticSpecCanonicalModelId(model, rawModel);
   if (canonical && canonical !== model) {
-    const byCanonical = getSyncedCapability(provider, canonical);
+    const byCanonical = getSyncedCapabilitySync(provider, canonical);
     if (byCanonical) return byCanonical;
   }
 
@@ -257,7 +257,7 @@ function getSyncedCapabilityForResolved(
   for (const candidate of [model, rawModel]) {
     const base = stripLatestAlias(candidate);
     if (base && base !== model && base !== rawModel) {
-      const byAlias = getSyncedCapability(provider, base);
+      const byAlias = getSyncedCapabilitySync(provider, base);
       if (byAlias) return byAlias;
     }
   }
@@ -461,10 +461,10 @@ export function capThinkingBudget(input: CapabilityInput, budget: number): numbe
   return Math.min(budget, cap);
 }
 
-export function getModelContextLimit(
+export async function getModelContextLimit(
   providerOrInput: CapabilityInput,
   modelId?: string
-): number | null {
+): Promise<number | null> {
   const resolved =
     typeof providerOrInput === "string" && modelId !== undefined
       ? getResolvedModelCapabilities({ provider: providerOrInput, model: modelId })
@@ -472,6 +472,25 @@ export function getModelContextLimit(
   // Feature 5004: a persisted override (operator-set or auto-discovered) wins over the
   // static catalog / models.dev sync. `getResolvedModelCapabilities` stays override-free
   // so the reconciler can compare the catalog value against provider-declared windows.
-  const override = getModelContextOverride(resolved.provider, resolved.model);
+  const override = await getModelContextOverride(resolved.provider, resolved.model).catch(
+    () => null
+  );
   return override ?? resolved.contextWindow;
+}
+
+/**
+ * Synchronous variant of getModelContextLimit — returns the catalog value only,
+ * without the DB override lookup. Use this in hot-path sync contexts where the
+ * async override cannot be awaited. The override is advisory (Feature 5004) and
+ * is applied on the async path wherever possible.
+ */
+export function getModelContextLimitSync(
+  providerOrInput: CapabilityInput,
+  modelId?: string
+): number | null {
+  const resolved =
+    typeof providerOrInput === "string" && modelId !== undefined
+      ? getResolvedModelCapabilities({ provider: providerOrInput, model: modelId })
+      : getResolvedModelCapabilities(providerOrInput);
+  return resolved.contextWindow;
 }

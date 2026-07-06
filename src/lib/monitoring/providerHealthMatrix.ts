@@ -1,6 +1,6 @@
 import { getSyncedAvailableModelsByConnection } from "@/lib/db/models";
 import { getProviderConnections } from "@/lib/db/providers";
-import { getDbInstance } from "@/lib/db/core";
+import { getDbClient } from "@/lib/db/core";
 import { getAllCircuitBreakerStatuses } from "@/shared/utils/circuitBreaker";
 import { getAllModelLockouts } from "@omniroute/open-sse/services/accountFallback";
 import { getWebSessionPoolHealth } from "@omniroute/open-sse/services/webSessionPoolHealth";
@@ -206,81 +206,80 @@ function maxIso(left: string | null, right: string | null): string | null {
   return Date.parse(right) > Date.parse(left) ? right : left;
 }
 
-function queryCallLogTargetStats(
+async function queryCallLogTargetStats(
   cutoff: string,
   providerFilter: string | null
-): CallLogTargetStats[] {
-  const db = getDbInstance();
-  const providerClause = providerFilter ? "AND c.provider = @provider" : "";
-  const params = providerFilter ? { cutoff, provider: providerFilter } : { cutoff };
-  const rows = db
-    .prepare(
-      `WITH log_targets AS (
-        SELECT
-          c.provider,
-          COALESCE(c.connection_id, '') as connectionId,
-          COALESCE(c.model, c.requested_model, 'unknown') as model,
-          c.status,
-          c.duration,
-          c.timestamp,
-          c.id,
-          c.error_summary
-        FROM call_logs c
-        WHERE c.provider IS NOT NULL
-          AND c.provider != '-'
-          AND c.timestamp >= @cutoff
-          ${providerClause}
-      ), ranked AS (
-        SELECT
-          provider,
-          connectionId,
-          model,
-          status,
-          duration,
-          timestamp,
-          CASE
-            WHEN (status IS NOT NULL AND (status < 200 OR status >= 400))
-              OR error_summary IS NOT NULL
-            THEN 1
-            ELSE 0
-          END as isError,
-          ROW_NUMBER() OVER (
-            PARTITION BY provider, connectionId, model
-            ORDER BY timestamp DESC, id DESC
-          ) as latestRank,
-          ROW_NUMBER() OVER (
-            PARTITION BY provider, connectionId, model,
-              CASE
-                WHEN (status IS NOT NULL AND (status < 200 OR status >= 400))
-                  OR error_summary IS NOT NULL
-                THEN 1
-                ELSE 0
-              END
-            ORDER BY timestamp DESC, id DESC
-          ) as errorRank
-        FROM log_targets
-      )
+): Promise<CallLogTargetStats[]> {
+  const db = getDbClient();
+  const providerClause = providerFilter ? "AND c.provider = ?" : "";
+  const params: string[] = providerFilter ? [cutoff, providerFilter] : [cutoff];
+  const rows = await db.all<JsonRecord>(
+    `WITH log_targets AS (
+      SELECT
+        c.provider,
+        COALESCE(c.connection_id, '') as connectionId,
+        COALESCE(c.model, c.requested_model, 'unknown') as model,
+        c.status,
+        c.duration,
+        c.timestamp,
+        c.id,
+        c.error_summary
+      FROM call_logs c
+      WHERE c.provider IS NOT NULL
+        AND c.provider != '-'
+        AND c.timestamp >= ?
+        ${providerClause}
+    ), ranked AS (
       SELECT
         provider,
         connectionId,
         model,
-        COUNT(*) as requests,
-        SUM(CASE WHEN status >= 200 AND status < 400 THEN 1 ELSE 0 END) as successes,
-        ROUND(AVG(duration)) as avgLatencyMs,
-        MAX(timestamp) as lastRequestAt,
-        MAX(
-          CASE
-            WHEN isError = 1
-            THEN timestamp
-            ELSE NULL
-          END
-        ) as lastErrorAt,
-        MAX(CASE WHEN latestRank = 1 THEN status ELSE NULL END) as lastStatus,
-        MAX(CASE WHEN isError = 1 AND errorRank = 1 THEN status ELSE NULL END) as lastErrorStatus
-      FROM ranked
-      GROUP BY provider, connectionId, model`
+        status,
+        duration,
+        timestamp,
+        CASE
+          WHEN (status IS NOT NULL AND (status < 200 OR status >= 400))
+            OR error_summary IS NOT NULL
+          THEN 1
+          ELSE 0
+        END as isError,
+        ROW_NUMBER() OVER (
+          PARTITION BY provider, connectionId, model
+          ORDER BY timestamp DESC, id DESC
+        ) as latestRank,
+        ROW_NUMBER() OVER (
+          PARTITION BY provider, connectionId, model,
+            CASE
+              WHEN (status IS NOT NULL AND (status < 200 OR status >= 400))
+                OR error_summary IS NOT NULL
+              THEN 1
+              ELSE 0
+            END
+          ORDER BY timestamp DESC, id DESC
+        ) as errorRank
+      FROM log_targets
     )
-    .all(params) as JsonRecord[];
+    SELECT
+      provider,
+      connectionId,
+      model,
+      COUNT(*) as requests,
+      SUM(CASE WHEN status >= 200 AND status < 400 THEN 1 ELSE 0 END) as successes,
+      ROUND(AVG(duration)) as avgLatencyMs,
+      MAX(timestamp) as lastRequestAt,
+      MAX(
+        CASE
+          WHEN isError = 1
+          THEN timestamp
+          ELSE NULL
+        END
+      ) as lastErrorAt,
+      MAX(CASE WHEN latestRank = 1 THEN status ELSE NULL END) as lastStatus,
+      MAX(CASE WHEN isError = 1 AND errorRank = 1 THEN status ELSE NULL END) as lastErrorStatus
+    FROM ranked
+    GROUP BY provider, connectionId, model`,
+    ...params
+  );
 
   return rows.map((row) => {
     const connectionId = toString(row.connectionId);
@@ -352,7 +351,7 @@ export async function buildProviderHealthMatrix(
     getProviderConnections(providerFilter ? { provider: providerFilter } : {}),
     getAllCircuitBreakerStatuses(),
     getAllModelLockouts(),
-    Promise.resolve(queryCallLogTargetStats(cutoff, providerFilter)),
+    queryCallLogTargetStats(cutoff, providerFilter),
   ]);
 
   const connectionRows = (connections as JsonRecord[]).filter((connection) => {

@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 import { backupDbFile } from "./backup";
 
 type JsonRecord = Record<string, unknown>;
@@ -92,7 +92,7 @@ export async function listOneproxyProxies(options?: {
   minQuality?: number;
   limit?: number;
 }): Promise<OneproxyProxyRecord[]> {
-  const db = getDbInstance();
+  const db = getDbClient();
 
   let sql = "SELECT * FROM proxy_registry WHERE source = 'oneproxy' AND status = 'active'";
   const params: unknown[] = [];
@@ -117,37 +117,31 @@ export async function listOneproxyProxies(options?: {
     params.push(options.limit);
   }
 
-  const rows = db.prepare(sql).all(...params);
+  const rows = await db.all(sql, ...params);
   return rows.map(mapProxyRow);
 }
 
 export async function getOneproxyStats(): Promise<OneproxyStats> {
-  const db = getDbInstance();
+  const db = getDbClient();
 
-  const statsRow = db
-    .prepare(
-      `SELECT
+  const statsRow = await db.get(
+    `SELECT
         COUNT(*) as total,
         SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active,
         AVG(quality_score) as avg_quality,
         MAX(last_validated) as last_validated
        FROM proxy_registry WHERE source = 'oneproxy'`
-    )
-    .get();
+  );
 
   const stats = mapStatsRow(statsRow);
 
-  const byProtocol = db
-    .prepare(
-      "SELECT type as protocol, COUNT(*) as count FROM proxy_registry WHERE source = 'oneproxy' GROUP BY type ORDER BY count DESC"
-    )
-    .all() as Array<JsonRecord>;
+  const byProtocol = await db.all<JsonRecord>(
+    "SELECT type as protocol, COUNT(*) as count FROM proxy_registry WHERE source = 'oneproxy' GROUP BY type ORDER BY count DESC"
+  );
 
-  const byCountry = db
-    .prepare(
-      "SELECT country_code as countryCode, COUNT(*) as count FROM proxy_registry WHERE source = 'oneproxy' AND country_code IS NOT NULL GROUP BY country_code ORDER BY count DESC LIMIT 20"
-    )
-    .all() as Array<JsonRecord>;
+  const byCountry = await db.all<JsonRecord>(
+    "SELECT country_code as countryCode, COUNT(*) as count FROM proxy_registry WHERE source = 'oneproxy' AND country_code IS NOT NULL GROUP BY country_code ORDER BY count DESC LIMIT 20"
+  );
 
   return {
     ...stats,
@@ -165,22 +159,23 @@ export async function getOneproxyStats(): Promise<OneproxyStats> {
 export async function upsertOneproxyProxy(
   input: OneproxyUpsertInput
 ): Promise<{ proxy: OneproxyProxyRecord | null; action: "created" | "updated" }> {
-  const db = getDbInstance();
+  const db = getDbClient();
   const now = new Date().toISOString();
 
   const name = `${input.protocol?.toUpperCase() || "HTTP"} - ${input.countryCode || "Unknown"} - ${input.ip}`;
 
-  const existing = db
-    .prepare("SELECT id FROM proxy_registry WHERE host = ? AND port = ? AND source = 'oneproxy'")
-    .get(input.ip, input.port) as { id?: string } | undefined;
+  const existing = await db.get<{ id?: string }>(
+    "SELECT id FROM proxy_registry WHERE host = ? AND port = ? AND source = 'oneproxy'",
+    input.ip,
+    input.port
+  );
 
   if (existing?.id) {
-    db.prepare(
+    await db.run(
       `UPDATE proxy_registry
        SET status = ?, quality_score = ?, latency_ms = ?, anonymity = ?,
            google_access = ?, last_validated = ?, country_code = ?, updated_at = ?
-       WHERE id = ?`
-    ).run(
+       WHERE id = ?`,
       "active",
       input.qualityScore ?? null,
       input.latencyMs ?? null,
@@ -197,13 +192,12 @@ export async function upsertOneproxyProxy(
   }
 
   const id = randomUUID();
-  db.prepare(
+  await db.run(
     `INSERT INTO proxy_registry
      (id, name, type, host, port, region, notes, status, source,
       quality_score, latency_ms, anonymity, google_access, last_validated, country_code,
       created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     name,
     input.protocol || "http",
@@ -228,26 +222,28 @@ export async function upsertOneproxyProxy(
 }
 
 export async function getOneproxyProxyById(id: string): Promise<OneproxyProxyRecord | null> {
-  const db = getDbInstance();
-  const row = db
-    .prepare("SELECT * FROM proxy_registry WHERE id = ? AND source = 'oneproxy'")
-    .get(id);
+  const db = getDbClient();
+  const row = await db.get(
+    "SELECT * FROM proxy_registry WHERE id = ? AND source = 'oneproxy'",
+    id
+  );
   if (!row) return null;
   return mapProxyRow(row);
 }
 
 export async function deleteOneproxyProxy(id: string): Promise<boolean> {
-  const db = getDbInstance();
-  const result = db
-    .prepare("DELETE FROM proxy_registry WHERE id = ? AND source = 'oneproxy'")
-    .run(id);
+  const db = getDbClient();
+  const result = await db.run(
+    "DELETE FROM proxy_registry WHERE id = ? AND source = 'oneproxy'",
+    id
+  );
   backupDbFile("pre-write");
   return result.changes > 0;
 }
 
 export async function clearAllOneproxyProxies(): Promise<number> {
-  const db = getDbInstance();
-  const result = db.prepare("DELETE FROM proxy_registry WHERE source = 'oneproxy'").run();
+  const db = getDbClient();
+  const result = await db.run("DELETE FROM proxy_registry WHERE source = 'oneproxy'");
   backupDbFile("pre-write");
   return result.changes;
 }
@@ -255,7 +251,7 @@ export async function clearAllOneproxyProxies(): Promise<number> {
 export async function getOneproxyProxyForRotation(options?: {
   strategy?: "random" | "quality" | "sequential";
 }): Promise<OneproxyProxyRecord | null> {
-  const db = getDbInstance();
+  const db = getDbClient();
   const strategy = options?.strategy || "quality";
 
   let sql = "SELECT * FROM proxy_registry WHERE source = 'oneproxy' AND status = 'active'";
@@ -272,22 +268,22 @@ export async function getOneproxyProxyForRotation(options?: {
       break;
   }
 
-  const row = db.prepare(sql).get();
+  const row = await db.get(sql);
   if (!row) return null;
   return mapProxyRow(row);
 }
 
 export async function markOneproxyProxyFailed(host: string, port: number): Promise<boolean> {
-  const db = getDbInstance();
-  const result = db
-    .prepare(
-      `UPDATE proxy_registry
+  const db = getDbClient();
+  const result = await db.run(
+    `UPDATE proxy_registry
        SET quality_score = MAX(0, COALESCE(quality_score, 50) - 10),
            status = CASE WHEN COALESCE(quality_score, 50) <= 10 THEN 'inactive' ELSE status END,
            updated_at = datetime('now')
-       WHERE host = ? AND port = ? AND source = 'oneproxy'`
-    )
-    .run(host, port);
+       WHERE host = ? AND port = ? AND source = 'oneproxy'`,
+    host,
+    port
+  );
   backupDbFile("pre-write");
   return result.changes > 0;
 }

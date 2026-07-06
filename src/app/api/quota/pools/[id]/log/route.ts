@@ -36,7 +36,7 @@ export async function GET(request: Request, { params }: RouteParams): Promise<Re
       ? Math.min(parsedLimit, 200)
       : 50;
 
-    const events = listConsumptionForPool(id, limit);
+    const events = await listConsumptionForPool(id, limit);
     return NextResponse.json({ events });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to get pool log";

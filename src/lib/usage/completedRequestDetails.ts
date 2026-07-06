@@ -1,4 +1,4 @@
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 import type { PendingRequestDetail } from "./usageHistory";
 
 const COMPLETED_DETAIL_TTL_MS = 120_000;
@@ -58,13 +58,14 @@ export function maybeEnrichCompletedDetail(updated: PendingRequestDetail, connec
       const missingClient = updated.clientResponse === undefined || updated.clientResponse === null;
       if (!missingProvider && !missingClient) return;
 
-      const db = getDbInstance();
+      const db = getDbClient();
       const sinceIso = new Date(Date.now() - 30_000).toISOString();
-      const rows = db
-        .prepare(
-          `SELECT artifact_relpath FROM call_logs WHERE connection_id = ? AND model = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT 5`
-        )
-        .all(connectionId, updated.model, sinceIso) as Array<{ artifact_relpath: string | null }>;
+      const rows = await db.all<{ artifact_relpath: string | null }>(
+        `SELECT artifact_relpath FROM call_logs WHERE connection_id = ? AND model = ? AND timestamp >= ? ORDER BY timestamp DESC LIMIT 5`,
+        connectionId,
+        updated.model,
+        sinceIso
+      );
       for (const row of rows) {
         if (!row.artifact_relpath) continue;
         const { readCallArtifact } = await import("./callLogArtifacts");

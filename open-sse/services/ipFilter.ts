@@ -5,7 +5,7 @@
  */
 
 import { isIP } from "node:net";
-import { getDbInstance } from "../../src/lib/db/core.ts";
+import { getDbClient } from "../../src/lib/db/core.ts";
 
 // In-memory IP lists
 let _config = {
@@ -31,40 +31,51 @@ function ensureLoaded() {
   // Mark loaded up-front so a DB failure (build phase / cloud / migration not yet
   // run) degrades to in-memory only instead of retrying on every request.
   _loaded = true;
-  try {
-    const row = getDbInstance()
-      .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
-      .get(IP_FILTER_NAMESPACE, IP_FILTER_KEY) as { value?: string } | undefined;
-    if (!row?.value) return;
-    const parsed = JSON.parse(row.value) as {
-      enabled?: boolean;
-      mode?: string;
-      blacklist?: string[];
-      whitelist?: string[];
-    };
-    _config.enabled = parsed.enabled === true;
-    if (typeof parsed.mode === "string") _config.mode = parsed.mode;
-    _config.blacklist = new Set(Array.isArray(parsed.blacklist) ? parsed.blacklist : []);
-    _config.whitelist = new Set(Array.isArray(parsed.whitelist) ? parsed.whitelist : []);
-  } catch {
-    // No DB / table yet — keep the in-memory defaults.
-  }
+  (async () => {
+    try {
+      const db = getDbClient();
+      const row = await db.get<{ value?: string }>(
+        "SELECT value FROM key_value WHERE namespace = ? AND key = ?",
+        IP_FILTER_NAMESPACE,
+        IP_FILTER_KEY
+      );
+      if (!row?.value) return;
+      const parsed = JSON.parse(row.value) as {
+        enabled?: boolean;
+        mode?: string;
+        blacklist?: string[];
+        whitelist?: string[];
+      };
+      _config.enabled = parsed.enabled === true;
+      if (typeof parsed.mode === "string") _config.mode = parsed.mode;
+      _config.blacklist = new Set(Array.isArray(parsed.blacklist) ? parsed.blacklist : []);
+      _config.whitelist = new Set(Array.isArray(parsed.whitelist) ? parsed.whitelist : []);
+    } catch {
+      // No DB / table yet — keep the in-memory defaults.
+    }
+  })();
 }
 
 function persist() {
-  try {
-    const payload = JSON.stringify({
-      enabled: _config.enabled,
-      mode: _config.mode,
-      blacklist: Array.from(_config.blacklist),
-      whitelist: Array.from(_config.whitelist),
-    });
-    getDbInstance()
-      .prepare("INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)")
-      .run(IP_FILTER_NAMESPACE, IP_FILTER_KEY, payload);
-  } catch {
-    // Best-effort persistence: never let a DB write failure break the request path.
-  }
+  const payload = JSON.stringify({
+    enabled: _config.enabled,
+    mode: _config.mode,
+    blacklist: Array.from(_config.blacklist),
+    whitelist: Array.from(_config.whitelist),
+  });
+  (async () => {
+    try {
+      const db = getDbClient();
+      await db.run(
+        "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)",
+        IP_FILTER_NAMESPACE,
+        IP_FILTER_KEY,
+        payload
+      );
+    } catch {
+      // Best-effort persistence: never let a DB write failure break the request path.
+    }
+  })();
 }
 
 const _tempBanSweep = setInterval(() => {

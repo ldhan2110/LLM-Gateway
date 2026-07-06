@@ -92,7 +92,7 @@ test.after(() => {
 // getProviderMetrics
 // ---------------------------------------------------------------------------
 
-test("#3500 getProviderMetrics — aggregates totals and latency per provider", () => {
+test("#3500 getProviderMetrics — aggregates totals and latency per provider", async () => {
   // Two openai rows: one success, one error with error_summary
   const ts1 = "2025-06-01T10:00:00.000Z";
   const ts2 = "2025-06-01T11:00:00.000Z";
@@ -116,7 +116,7 @@ test("#3500 getProviderMetrics — aggregates totals and latency per provider", 
      VALUES (?, ?, 'POST', '/v1/test', 200, 'x', NULL, 100, 0, 0, 'upstream', 'none', 0, 0, 0)`
   ).run(`log-3500-null-${++_idSeq}`, new Date().toISOString());
 
-  const rows = mod.getProviderMetrics();
+  const rows = await mod.getProviderMetrics();
 
   // '-' and null providers must not appear
   assert.ok(!rows.some((r) => r.provider === "-"), "provider '-' excluded");
@@ -145,14 +145,14 @@ test("#3500 getProviderMetrics — aggregates totals and latency per provider", 
 // getSearchProviderStats
 // ---------------------------------------------------------------------------
 
-test("#3500 getSearchProviderStats — aggregates search requests per provider", () => {
+test("#3500 getSearchProviderStats — aggregates search requests per provider", async () => {
   insertCallLog({ provider: "brave", status: 200, duration: 50, request_type: "search" });
   insertCallLog({ provider: "brave", status: 200, duration: 150, request_type: "search" });
   insertCallLog({ provider: "serper", status: 200, duration: 80, request_type: "search" });
   // non-search row — must NOT appear
   insertCallLog({ provider: "openai", status: 200, duration: 100, request_type: null });
 
-  const rows = mod.getSearchProviderStats();
+  const rows = await mod.getSearchProviderStats();
 
   // Only search request_type rows
   assert.ok(!rows.some((r) => r.provider === "openai"), "non-search row excluded");
@@ -171,7 +171,7 @@ test("#3500 getSearchProviderStats — aggregates search requests per provider",
 // getRecentSearchLogs
 // ---------------------------------------------------------------------------
 
-test("#3500 getRecentSearchLogs — returns up to 10 most recent search rows", () => {
+test("#3500 getRecentSearchLogs — returns up to 10 most recent search rows", async () => {
   // Insert 12 search rows with incrementing timestamps
   for (let i = 1; i <= 12; i++) {
     const ts = new Date(Date.UTC(2025, 5, i, 12, 0, 0)).toISOString();
@@ -184,7 +184,7 @@ test("#3500 getRecentSearchLogs — returns up to 10 most recent search rows", (
     });
   }
 
-  const rows = mod.getRecentSearchLogs();
+  const rows = await mod.getRecentSearchLogs();
   assert.equal(rows.length, 10, "limited to 10 rows");
   // Most recent first (i=12 is the newest)
   assert.ok(rows[0].timestamp >= rows[rows.length - 1].timestamp, "ordered newest-first");
@@ -194,7 +194,7 @@ test("#3500 getRecentSearchLogs — returns up to 10 most recent search rows", (
 // getSearchAggregateStats
 // ---------------------------------------------------------------------------
 
-test("#3500 getSearchAggregateStats — correct totals, today, errors, avg, cached", () => {
+test("#3500 getSearchAggregateStats — correct totals, today, errors, avg, cached", async () => {
   const todayStart = new Date();
   todayStart.setUTCHours(0, 0, 0, 0);
   const todayIso = todayStart.toISOString();
@@ -209,7 +209,7 @@ test("#3500 getSearchAggregateStats — correct totals, today, errors, avg, cach
   const yesterday = new Date(Date.now() - 86_400_000).toISOString();
   insertCallLog({ provider: "brave", status: 200, duration: 200, request_type: "search", timestamp: yesterday });
 
-  const result = mod.getSearchAggregateStats(todayIso);
+  const result = await mod.getSearchAggregateStats(todayIso);
 
   assert.ok(result.total >= 4, "total includes all search rows (across all tests in file)");
   assert.ok(result.today >= 3, "today counts rows from today");
@@ -218,10 +218,10 @@ test("#3500 getSearchAggregateStats — correct totals, today, errors, avg, cach
   assert.ok(result.avg_duration !== null, "avg_duration not null when rows have duration > 0");
 });
 
-test("#3500 getSearchAggregateStats — returns zero struct when no search rows match", () => {
+test("#3500 getSearchAggregateStats — returns zero struct when no search rows match", async () => {
   // Use a far-future todayIso so no row qualifies
   const farFuture = "2999-01-01T00:00:00.000Z";
-  const result = mod.getSearchAggregateStats(farFuture);
+  const result = await mod.getSearchAggregateStats(farFuture);
   // total should be 0 (no rows WHERE request_type='search' AND timestamp >= 2999…)
   // Actually the total counts ALL search rows regardless of todayIso; only "today" is gated.
   // The function never returns null, so we just check the shape.
@@ -234,7 +234,7 @@ test("#3500 getSearchAggregateStats — returns zero struct when no search rows 
 // getSearchProviderCounts
 // ---------------------------------------------------------------------------
 
-test("#3500 getSearchProviderCounts — ordered by cnt desc", () => {
+test("#3500 getSearchProviderCounts — ordered by cnt desc", async () => {
   // brave has multiple rows from earlier tests; add a burst to ensure ordering
   for (let i = 0; i < 5; i++) {
     insertCallLog({ provider: "bing", status: 200, request_type: "search" });
@@ -243,7 +243,7 @@ test("#3500 getSearchProviderCounts — ordered by cnt desc", () => {
     insertCallLog({ provider: "rare_provider", status: 200, request_type: "search" });
   }
 
-  const rows = mod.getSearchProviderCounts();
+  const rows = await mod.getSearchProviderCounts();
   // Each row must have provider + cnt
   for (const row of rows) {
     assert.equal(typeof row.provider, "string");

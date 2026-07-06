@@ -46,7 +46,7 @@ export interface RoutingDecision {
 export interface RouterStrategy {
   readonly name: string;
   readonly description: string;
-  select(pool: ProviderCandidate[], context: RoutingContext): RoutingDecision;
+  select(pool: ProviderCandidate[], context: RoutingContext): Promise<RoutingDecision>;
 }
 
 // ── RulesStrategy: wraps 6-factor scoring engine ────────────────────────────
@@ -86,9 +86,9 @@ class RulesStrategyImpl implements RouterStrategy {
   readonly description =
     "6-factor weighted scoring: quota, health, cost, latency, taskFit, stability";
 
-  select(pool: ProviderCandidate[], context: RoutingContext): RoutingDecision {
+  async select(pool: ProviderCandidate[], context: RoutingContext): Promise<RoutingDecision> {
     const eligible = pool.filter((c) => c.circuitBreakerState !== "OPEN");
-    const ranked: ScoredProvider[] = scorePool(
+    const ranked: ScoredProvider[] = await scorePool(
       eligible.length > 0 ? eligible : pool,
       context.taskType,
       undefined,
@@ -113,7 +113,7 @@ class CostStrategyImpl implements RouterStrategy {
   readonly name = "cost";
   readonly description = "Always selects cheapest available provider (by costPer1MTokens)";
 
-  select(pool: ProviderCandidate[], context: RoutingContext): RoutingDecision {
+  async select(pool: ProviderCandidate[], context: RoutingContext): Promise<RoutingDecision> {
     const healthy = pool.filter((c) => c.circuitBreakerState !== "OPEN");
     const candidates = healthy.length > 0 ? healthy : pool;
     const sorted = [...candidates].sort((a, b) => a.costPer1MTokens - b.costPer1MTokens);
@@ -137,7 +137,7 @@ class LatencyStrategyImpl implements RouterStrategy {
   readonly description =
     "Prioritizes the fastest reliable provider-model pair using TTFT, TPS, E2E latency, health, fail rate, and stability";
 
-  select(pool: ProviderCandidate[], context: RoutingContext): RoutingDecision {
+  async select(pool: ProviderCandidate[], context: RoutingContext): Promise<RoutingDecision> {
     const ranked = rankBySpeed(pool.map(toSpeedCandidate));
     const winner = ranked[0];
     if (!winner) {
@@ -234,7 +234,7 @@ class SLAStrategyImpl implements RouterStrategy {
   readonly description =
     "Selects the provider most likely to satisfy latency, error-rate, and cost SLOs";
 
-  select(pool: ProviderCandidate[], context: RoutingContext): RoutingDecision {
+  async select(pool: ProviderCandidate[], context: RoutingContext): Promise<RoutingDecision> {
     const healthy = pool.filter((c) => c.circuitBreakerState !== "OPEN");
     const candidates = healthy.length > 0 ? healthy : pool;
     if (candidates.length === 0) throw new Error("[SLAStrategy] No candidates available");
@@ -300,7 +300,7 @@ class LKGPStrategyImpl implements RouterStrategy {
   readonly name = "lkgp";
   readonly description = "Tries last known good provider first, then falls back to rules";
 
-  select(pool: ProviderCandidate[], context: RoutingContext): RoutingDecision {
+  async select(pool: ProviderCandidate[], context: RoutingContext): Promise<RoutingDecision> {
     if (context.lkgpEnabled === false) {
       return getStrategy("rules").select(pool, context);
     }
@@ -366,10 +366,10 @@ export function listStrategies(): Array<{ name: string; description: string }> {
   return [...strategyRegistry.entries()].map(([name, s]) => ({ name, description: s.description }));
 }
 
-export function selectWithStrategy(
+export async function selectWithStrategy(
   pool: ProviderCandidate[],
   context: RoutingContext,
   strategyName = "rules"
-): RoutingDecision {
+): Promise<RoutingDecision> {
   return getStrategy(strategyName).select(pool, context);
 }

@@ -92,7 +92,7 @@ test("#3954 setConnectionRateLimitUntil stores a numeric string that selection s
     name: "AG 3954",
   });
   const connId = (conn as { id: string }).id;
-  providersDb.setConnectionRateLimitUntil(connId, Date.now() + HOUR);
+  await providersDb.setConnectionRateLimitUntil(connId, Date.now() + HOUR);
 
   const db = core.getDbInstance() as unknown as {
     prepare: (sql: string) => { get: (id: string) => { rate_limited_until: unknown } | undefined };

@@ -662,7 +662,7 @@ export async function handleComboChat({
     config,
     comboTargetTimeoutMs,
     reasoningTokenBufferEnabled,
-  } = phaseComboSetup(comboCtx);
+  } = await phaseComboSetup(comboCtx);
   body = comboCtx.body;
 
   const handleSingleModelWithTimeout = buildTargetTimeoutRunner({
@@ -1442,9 +1442,9 @@ export async function handleComboChat({
             relayOptions?.sessionId &&
             !(body as Record<string, unknown>)?.[SKIP_UNIVERSAL_HANDOFF_FLAG]
           ) {
-            const lastModel = getLastSessionModel(relayOptions.sessionId, combo.name);
+            const lastModel = await getLastSessionModel(relayOptions.sessionId, combo.name);
             if (lastModel && lastModel !== modelStr) {
-              const existingHandoff = getHandoff(relayOptions.sessionId, combo.name);
+              const existingHandoff = await getHandoff(relayOptions.sessionId, combo.name);
               attemptBody = injectUniversalHandoffBody(
                 attemptBody, // Use the cloned body to maintain isolation
                 lastModel,
@@ -1613,7 +1613,7 @@ export async function handleComboChat({
               effectiveSessionId &&
               !(body as Record<string, unknown>)?.[SKIP_UNIVERSAL_HANDOFF_FLAG]
             ) {
-              recordSessionModelUsage(
+              await recordSessionModelUsage(
                 effectiveSessionId,
                 combo.name,
                 modelStr,
@@ -1628,8 +1628,8 @@ export async function handleComboChat({
               relayOptions?.sessionId &&
               !(body as Record<string, unknown>)?.[SKIP_UNIVERSAL_HANDOFF_FLAG]
             ) {
-              const prevModel = getLastSessionModel(relayOptions.sessionId, combo.name);
-              recordSessionModelUsage(
+              const prevModel = await getLastSessionModel(relayOptions.sessionId, combo.name);
+              await recordSessionModelUsage(
                 relayOptions.sessionId,
                 combo.name,
                 modelStr,
@@ -1655,7 +1655,7 @@ export async function handleComboChat({
                 });
               }
 
-              recordSessionModelUsage(
+              await recordSessionModelUsage(
                 relayOptions.sessionId,
                 combo.name,
                 modelStr,

@@ -7,7 +7,7 @@
  * @module lib/usage/usageStats
  */
 
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 import { getApiKeys } from "../db/apiKeys";
 import { getPendingRequests } from "./usageHistory";
 import { getAccountDisplayName } from "@/lib/display/names";
@@ -195,27 +195,28 @@ function getApiKeyStatsKey(apiKeyId: string | null, apiKeyName: string | null): 
  * counts the tokens it routed and compares against the known monthly limit.
  * Only reflects traffic that went THROUGH OmniRoute (not the provider's panel).
  */
-export function getMonthlyProviderTokensForConnection(
+export async function getMonthlyProviderTokensForConnection(
   provider: string,
   connectionId: string
-): number {
+): Promise<number> {
   if (!provider || !connectionId) return 0;
-  const db = getDbInstance();
+  const db = getDbClient();
   const now = new Date();
   const monthStartIso = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
   ).toISOString();
-  const row = db
-    .prepare(
-      `SELECT COALESCE(SUM(tokens_input), 0)
+  const row = await db.get<{ total?: number }>(
+    `SELECT COALESCE(SUM(tokens_input), 0)
             + COALESCE(SUM(tokens_output), 0)
             + COALESCE(SUM(tokens_cache_read), 0)
             + COALESCE(SUM(tokens_cache_creation), 0)
             + COALESCE(SUM(tokens_reasoning), 0) AS total
        FROM usage_history
-       WHERE provider = ? AND connection_id = ? AND timestamp >= ?`
-    )
-    .get(provider, connectionId, monthStartIso) as { total?: number } | undefined;
+       WHERE provider = ? AND connection_id = ? AND timestamp >= ?`,
+    provider,
+    connectionId,
+    monthStartIso
+  );
   return Math.max(0, Number(row?.total ?? 0));
 }
 
@@ -236,10 +237,17 @@ export async function getConnectionSpendUsdSinceAdded(
 ): Promise<{ costUsd: number; requests: number }> {
   if (!provider || !connectionId) return { costUsd: 0, requests: 0 };
 
-  const db = getDbInstance();
-  const rows = db
-    .prepare(
-      `SELECT model,
+  const db = getDbClient();
+  const rows = await db.all<{
+    model?: string;
+    input?: number;
+    output?: number;
+    cacheRead?: number;
+    cacheCreation?: number;
+    reasoning?: number;
+    requests?: number;
+  }>(
+    `SELECT model,
           COALESCE(SUM(tokens_input), 0) AS input,
           COALESCE(SUM(tokens_output), 0) AS output,
           COALESCE(SUM(tokens_cache_read), 0) AS cacheRead,
@@ -248,17 +256,10 @@ export async function getConnectionSpendUsdSinceAdded(
           COUNT(*) AS requests
        FROM usage_history
        WHERE connection_id = ? AND provider = ? AND success = 1
-       GROUP BY model`
-    )
-    .all(connectionId, provider) as Array<{
-    model?: string;
-    input?: number;
-    output?: number;
-    cacheRead?: number;
-    cacheCreation?: number;
-    reasoning?: number;
-    requests?: number;
-  }>;
+       GROUP BY model`,
+    connectionId,
+    provider
+  );
 
   let costUsd = 0;
   let requests = 0;
@@ -287,7 +288,7 @@ export async function getConnectionSpendUsdSinceAdded(
  * Uses UNION of recent raw data and older aggregated data when aggregation is enabled.
  */
 export async function getUsageStats() {
-  const db = getDbInstance();
+  const db = getDbClient();
   const aggregationEnabled = await isAggregationEnabled();
   const cutoffDate = aggregationEnabled ? await getRawDataCutoffDate() : null;
   const sourceSql = buildUsageSourceSql(aggregationEnabled);
@@ -380,16 +381,15 @@ export async function getUsageStats() {
 
   const tenMinutesAgo = new Date(currentMinuteStart.getTime() - 9 * 60 * 1000);
 
-  const modelRows = db
-    .prepare(
-      `
+  const modelRows = await db.all(
+    `
         WITH usage_source AS (${sourceSql})
         SELECT provider, model, service_tier, ${AGGREGATE_FIELDS}
         FROM usage_source
         GROUP BY provider, model, service_tier
-      `
-    )
-    .all(...sourceParams) as unknown[];
+      `,
+    ...sourceParams
+  );
 
   for (const rowRaw of modelRows) {
     const row = asRecord(rowRaw);
@@ -436,17 +436,16 @@ export async function getUsageStats() {
     }
   }
 
-  const accountRows = db
-    .prepare(
-      `
+  const accountRows = await db.all(
+    `
         WITH usage_source AS (${sourceSql})
         SELECT provider, model, connection_id, service_tier, ${AGGREGATE_FIELDS}
         FROM usage_source
         WHERE connection_id IS NOT NULL AND connection_id != ''
         GROUP BY provider, model, connection_id, service_tier
-      `
-    )
-    .all(...sourceParams) as unknown[];
+      `,
+    ...sourceParams
+  );
 
   for (const rowRaw of accountRows) {
     const row = asRecord(rowRaw);
@@ -489,18 +488,17 @@ export async function getUsageStats() {
     }
   }
 
-  const apiKeyRows = db
-    .prepare(
-      `
+  const apiKeyRows = await db.all(
+    `
         WITH usage_source AS (${sourceSql})
         SELECT provider, model, api_key_id, api_key_name, service_tier, ${AGGREGATE_FIELDS}
         FROM usage_source
         WHERE (api_key_id IS NOT NULL AND api_key_id != '')
            OR (api_key_name IS NOT NULL AND api_key_name != '')
         GROUP BY provider, model, api_key_id, api_key_name, service_tier
-      `
-    )
-    .all(...sourceParams) as unknown[];
+      `,
+    ...sourceParams
+  );
 
   for (const rowRaw of apiKeyRows) {
     const row = asRecord(rowRaw);
@@ -543,9 +541,8 @@ export async function getUsageStats() {
     }
   }
 
-  const recentRows = db
-    .prepare(
-      `
+  const recentRows = await db.all(
+    `
         SELECT
           strftime('%Y-%m-%dT%H:%M:00.000Z', timestamp) as minute,
           provider,
@@ -560,9 +557,10 @@ export async function getUsageStats() {
         FROM usage_history
         WHERE timestamp >= ? AND timestamp <= ?
         GROUP BY minute, provider, model, service_tier
-      `
-    )
-    .all(tenMinutesAgo.toISOString(), now.toISOString()) as unknown[];
+      `,
+    tenMinutesAgo.toISOString(),
+    now.toISOString()
+  );
 
   for (const rowRaw of recentRows) {
     const row = asRecord(rowRaw);

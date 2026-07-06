@@ -377,7 +377,7 @@ async function generateHandoffAsync(options: {
   config?: ContextRelayConfig | null;
   handleSingleModel: (body: Record<string, unknown>, modelStr: string) => Promise<Response>;
 }): Promise<void> {
-  cleanupExpiredHandoffs();
+  await cleanupExpiredHandoffs();
 
   const relayConfig = resolveContextRelayConfig(options.config as Record<string, unknown>);
   const summaryModel = relayConfig.handoffModel || options.model;
@@ -417,7 +417,7 @@ async function generateHandoffAsync(options: {
   const parsed = parseHandoffJSON(content);
   if (!parsed) return;
 
-  upsertHandoff({
+  await upsertHandoff({
     sessionId: options.sessionId,
     comboName: options.comboName,
     fromAccount: options.connectionId,
@@ -451,27 +451,31 @@ export function maybeGenerateHandoff(options: {
   if (options.percentUsed < relayConfig.handoffThreshold) return;
   if (options.percentUsed >= HANDOFF_EXHAUSTION_THRESHOLD) return;
 
-  cleanupExpiredHandoffs();
-  if (hasActiveHandoff(options.sessionId, options.comboName)) return;
-  const inflightKey = getInflightKey(options.sessionId, options.comboName);
-  if (inflightHandoffGenerations.has(inflightKey)) return;
-  inflightHandoffGenerations.add(inflightKey);
+  const sessionId = options.sessionId;
+  const comboName = options.comboName;
 
   setImmediate(() => {
-    generateHandoffAsync({
-      ...options,
-      sessionId: options.sessionId as string,
-      connectionId: options.connectionId as string,
-      config: relayConfig,
-    })
-      .catch((err) => {
+    (async () => {
+      await cleanupExpiredHandoffs();
+      if (await hasActiveHandoff(sessionId, comboName)) return;
+      const inflightKey = getInflightKey(sessionId, comboName);
+      if (inflightHandoffGenerations.has(inflightKey)) return;
+      inflightHandoffGenerations.add(inflightKey);
+      try {
+        await generateHandoffAsync({
+          ...options,
+          sessionId: sessionId,
+          connectionId: options.connectionId as string,
+          config: relayConfig,
+        });
+      } catch (err) {
         if (process.env.NODE_ENV !== "test") {
-          console.warn("[context-relay] Handoff generation failed:", err?.message || err);
+          console.warn("[context-relay] Handoff generation failed:", (err as Error)?.message || err);
         }
-      })
-      .finally(() => {
+      } finally {
         inflightHandoffGenerations.delete(inflightKey);
-      });
+      }
+    })();
   });
 }
 

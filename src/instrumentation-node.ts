@@ -42,8 +42,8 @@ function isBackgroundServicesDisabled(): boolean {
 }
 
 async function ensureSecrets(): Promise<void> {
-  let getPersistedSecret = (_key: string): string | null => null;
-  let persistSecret = (_key: string, _value: string): void => {};
+  let getPersistedSecret = async (_key: string): Promise<string | null> => null;
+  let persistSecret = async (_key: string, _value: string): Promise<void> => {};
 
   try {
     ({ getPersistedSecret, persistSecret } = await import("@/lib/db/secrets"));
@@ -56,26 +56,26 @@ async function ensureSecrets(): Promise<void> {
   }
 
   if (!process.env.JWT_SECRET || process.env.JWT_SECRET.trim() === "") {
-    const persisted = getPersistedSecret("jwtSecret");
+    const persisted = await getPersistedSecret("jwtSecret");
     if (persisted) {
       process.env.JWT_SECRET = persisted;
       console.log("[STARTUP] JWT_SECRET restored from persistent store");
     } else {
       const generated = toBase64(getRandomBytes(48));
       process.env.JWT_SECRET = generated;
-      persistSecret("jwtSecret", generated);
+      await persistSecret("jwtSecret", generated);
       console.log("[STARTUP] JWT_SECRET auto-generated and persisted (random 64-char secret)");
     }
   }
 
   if (!process.env.API_KEY_SECRET || process.env.API_KEY_SECRET.trim() === "") {
-    const persisted = getPersistedSecret("apiKeySecret");
+    const persisted = await getPersistedSecret("apiKeySecret");
     if (persisted) {
       process.env.API_KEY_SECRET = persisted;
     } else {
       const generated = toHex(getRandomBytes(32));
       process.env.API_KEY_SECRET = generated;
-      persistSecret("apiKeySecret", generated);
+      await persistSecret("apiKeySecret", generated);
       console.log(
         "[STARTUP] API_KEY_SECRET auto-generated and persisted (random 64-char hex secret)"
       );
@@ -110,7 +110,7 @@ export async function registerNodejs(): Promise<void> {
   // See: https://github.com/diegosouzapw/OmniRoute/issues/3625 (Part A)
   try {
     const { clearStaleCrashCooldowns } = await import("@/lib/db/providers");
-    const { cleared } = clearStaleCrashCooldowns();
+    const { cleared } = await clearStaleCrashCooldowns();
     if (cleared > 0) {
       console.log(
         `[STARTUP] Cleared ${cleared} stale transient connection cooldown(s) from prior crash (#3625)`
@@ -277,7 +277,7 @@ export async function registerNodejs(): Promise<void> {
   // Settings > System & Storage and persists lastVacuumAt for the UI.
   try {
     const { initVacuumScheduler } = await import("@/lib/db/vacuumScheduler");
-    initVacuumScheduler();
+    await initVacuumScheduler();
     console.log("[STARTUP] Scheduled VACUUM initialized (#4437)");
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);

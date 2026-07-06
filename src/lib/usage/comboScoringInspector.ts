@@ -282,15 +282,15 @@ async function buildInspectorCombo(
   );
   const pool = contexts.map((entry) => entry.candidate);
 
-  const scored = contexts
-    .map((entry) => {
-      const factors = calculateFactors(entry.candidate, pool, taskType, getTaskFitness);
+  const scored = (await Promise.all(
+    contexts.map(async (entry) => {
+      const factors = await calculateFactors(entry.candidate, pool, taskType, getTaskFitness);
       const score = calculateScore(factors, weights);
       const issueCount = issueCounts.get(entry.context.target.executionKey) ?? 0;
       entry.context.autopilotIssueCount = issueCount;
       return { entry, factors, score };
     })
-    .sort((left, right) => right.score - left.score);
+  )).sort((left, right) => right.score - left.score);
 
   const connectionsByProvider = new Map<string, ProviderConnectionView[]>();
   await Promise.allSettled(

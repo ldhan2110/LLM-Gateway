@@ -3,45 +3,40 @@
  * CRUD operations for agent_bridge_mappings table.
  */
 
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 import type { AgentBridgeMappingRow } from "./_rowTypes";
 
-export function getMappingsForAgent(agentId: string): AgentBridgeMappingRow[] {
-  const db = getDbInstance();
-  const rows = db
-    .prepare(
-      "SELECT agent_id, source_model, target_model, updated_at FROM agent_bridge_mappings WHERE agent_id = ? ORDER BY source_model ASC"
-    )
-    .all(agentId) as AgentBridgeMappingRow[];
-  return rows;
+export async function getMappingsForAgent(agentId: string): Promise<AgentBridgeMappingRow[]> {
+  const db = getDbClient();
+  return db.all<AgentBridgeMappingRow>(
+    "SELECT agent_id, source_model, target_model, updated_at FROM agent_bridge_mappings WHERE agent_id = ? ORDER BY source_model ASC",
+    agentId
+  );
 }
 
-export function setMappings(
+export async function setMappings(
   agentId: string,
   mappings: Array<{ source: string; target: string }>
-): void {
-  const db = getDbInstance();
+): Promise<void> {
+  const db = getDbClient();
   const now = new Date().toISOString();
 
-  const deleteStmt = db.prepare("DELETE FROM agent_bridge_mappings WHERE agent_id = ?");
-  const insertStmt = db.prepare(
-    `INSERT INTO agent_bridge_mappings (agent_id, source_model, target_model, updated_at)
-     VALUES (?, ?, ?, ?)`
-  );
-
-  const runTransaction = db.transaction(() => {
-    deleteStmt.run(agentId);
+  await db.transaction(async (c) => {
+    await c.run("DELETE FROM agent_bridge_mappings WHERE agent_id = ?", agentId);
     for (const mapping of mappings) {
-      insertStmt.run(agentId, mapping.source, mapping.target, now);
+      await c.run(
+        `INSERT INTO agent_bridge_mappings (agent_id, source_model, target_model, updated_at)
+         VALUES (?, ?, ?, ?)`,
+        agentId, mapping.source, mapping.target, now
+      );
     }
   });
-
-  runTransaction();
 }
 
-export function deleteMapping(agentId: string, source: string): void {
-  const db = getDbInstance();
-  db.prepare(
-    "DELETE FROM agent_bridge_mappings WHERE agent_id = ? AND source_model = ?"
-  ).run(agentId, source);
+export async function deleteMapping(agentId: string, source: string): Promise<void> {
+  const db = getDbClient();
+  await db.run(
+    "DELETE FROM agent_bridge_mappings WHERE agent_id = ? AND source_model = ?",
+    agentId, source
+  );
 }

@@ -131,7 +131,7 @@ function emitGuardrailLog(
   target.call(logger, "GUARDRAIL", message, meta);
 }
 
-function getMode(options: PromptInjectionGuardrailOptions) {
+async function getMode(options: PromptInjectionGuardrailOptions) {
   // A dashboard-set DB override for INJECTION_GUARD_MODE wins over env vars, so the
   // Feature Flags UI actually controls this guard (DB > ENV > default, matching
   // resolveFeatureFlag). Read DB-only here to preserve the existing env fallback
@@ -140,7 +140,7 @@ function getMode(options: PromptInjectionGuardrailOptions) {
   // read error falls back to the env-based behavior.
   let dbOverride: string | undefined;
   try {
-    dbOverride = getFeatureFlagOverride("INJECTION_GUARD_MODE");
+    dbOverride = await getFeatureFlagOverride("INJECTION_GUARD_MODE");
   } catch {
     dbOverride = undefined;
   }
@@ -159,11 +159,11 @@ function isEnabled(options: PromptInjectionGuardrailOptions) {
   return options.enabled ?? process.env.INPUT_SANITIZER_ENABLED !== "false";
 }
 
-export function evaluatePromptInjection(
+export async function evaluatePromptInjection(
   body: unknown,
   options: PromptInjectionGuardrailOptions = {},
   context: GuardrailContext = {}
-): PromptInjectionGuardrailDecision {
+): Promise<PromptInjectionGuardrailDecision> {
   if (!isEnabled(options) || !body || typeof body !== "object") {
     return {
       blocked: false,
@@ -176,7 +176,7 @@ export function evaluatePromptInjection(
   }
 
   const logger = getLogger(options, context);
-  const mode = getMode(options);
+  const mode = await getMode(options);
   const threshold = getThreshold(options);
   const patterns = [...DEFAULT_GUARD_PATTERNS, ...(options.customPatterns || [])]
     .map(normalizePatternEntry)
@@ -258,7 +258,7 @@ export class PromptInjectionGuardrail extends BaseGuardrail {
   }
 
   async preCall(payload: unknown, context: GuardrailContext): Promise<GuardrailResult<unknown>> {
-    const decision = evaluatePromptInjection(payload, this.options, context);
+    const decision = await evaluatePromptInjection(payload, this.options, context);
     if (decision.blocked) {
       return {
         block: true,

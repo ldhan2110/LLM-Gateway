@@ -1,4 +1,4 @@
-import { getDbInstance, rowToCamel, objToSnake } from "./core";
+import { getDbClient, rowToCamel, objToSnake } from "./core";
 import { deleteFile } from "./files";
 import { v4 as uuidv4 } from "uuid";
 
@@ -118,7 +118,7 @@ function parseBatchItemCheckpoint(row: any): BatchItemCheckpoint {
   };
 }
 
-export function createBatch(
+export async function createBatch(
   batch: Omit<
     BatchRecord,
     | "id"
@@ -128,8 +128,8 @@ export function createBatch(
     | "requestCountsFailed"
     | "status"
   > & { status?: BatchRecord["status"] }
-): BatchRecord {
-  const db = getDbInstance();
+): Promise<BatchRecord> {
+  const db = getDbClient();
   const id = "batch_" + uuidv4().replaceAll("-", "").substring(0, 24);
   const createdAt = Math.floor(Date.now() / 1000);
   const record: BatchRecord = {
@@ -157,20 +157,20 @@ export function createBatch(
   const values = Object.values(snakeRecord);
   const placeholders = keys.map(() => "?").join(", ");
 
-  db.prepare(`INSERT INTO batches (${keys.join(", ")}) VALUES (${placeholders})`).run(...values);
+  await db.run(`INSERT INTO batches (${keys.join(", ")}) VALUES (${placeholders})`, ...values);
 
   return record;
 }
 
-export function getBatch(id: string): BatchRecord | null {
-  const db = getDbInstance();
-  const row = db.prepare("SELECT * FROM batches WHERE id = ?").get(id);
+export async function getBatch(id: string): Promise<BatchRecord | null> {
+  const db = getDbClient();
+  const row = await db.get("SELECT * FROM batches WHERE id = ?", id);
   if (!row) return null;
   return parseBatchRow(row);
 }
 
-export function updateBatch(id: string, updates: Partial<BatchRecord>): boolean {
-  const db = getDbInstance();
+export async function updateBatch(id: string, updates: Partial<BatchRecord>): Promise<boolean> {
+  const db = getDbClient();
   const snakeUpdates = objToSnake(updates) as any;
   if (snakeUpdates.metadata && typeof snakeUpdates.metadata !== "string") {
     snakeUpdates.metadata = JSON.stringify(snakeUpdates.metadata);
@@ -188,70 +188,72 @@ export function updateBatch(id: string, updates: Partial<BatchRecord>): boolean 
   const setClause = keys.map((k) => `${k} = ?`).join(", ");
   const values = Object.values(snakeUpdates);
 
-  const result = db.prepare(`UPDATE batches SET ${setClause} WHERE id = ?`).run(...values, id);
+  const result = await db.run(`UPDATE batches SET ${setClause} WHERE id = ?`, ...values, id);
   return result.changes > 0;
 }
 
-export function ensureBatchItemCheckpoints(
+export async function ensureBatchItemCheckpoints(
   batchId: string,
   items: Array<{ lineNumber: number; customId: string | null }>
-): void {
+): Promise<void> {
   if (items.length === 0) return;
 
-  const db = getDbInstance();
+  const db = getDbClient();
   const now = Math.floor(Date.now() / 1000);
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO batch_item_checkpoints (
-      batch_id,
-      line_number,
-      custom_id,
-      status,
-      result_json,
-      error_json,
-      created_at,
-      updated_at
-    )
-    VALUES (?, ?, ?, 'pending', NULL, NULL, ?, ?)
-  `);
-
-  const tx = db.transaction(() => {
+  await db.transaction(async (c) => {
     for (const item of items) {
-      insert.run(batchId, item.lineNumber, item.customId, now, now);
+      await c.run(
+        `INSERT OR IGNORE INTO batch_item_checkpoints (
+          batch_id,
+          line_number,
+          custom_id,
+          status,
+          result_json,
+          error_json,
+          created_at,
+          updated_at
+        )
+        VALUES (?, ?, ?, 'pending', NULL, NULL, ?, ?)`,
+        batchId,
+        item.lineNumber,
+        item.customId,
+        now,
+        now
+      );
     }
   });
-  tx();
 }
 
-export function countBatchItemCheckpoints(batchId: string): number {
-  const db = getDbInstance();
-  const row = db
-    .prepare("SELECT COUNT(*) AS c FROM batch_item_checkpoints WHERE batch_id = ?")
-    .get(batchId) as { c: number } | undefined;
+export async function countBatchItemCheckpoints(batchId: string): Promise<number> {
+  const db = getDbClient();
+  const row = await db.get<{ c: number }>(
+    "SELECT COUNT(*) AS c FROM batch_item_checkpoints WHERE batch_id = ?",
+    batchId
+  );
   return row ? Number(row.c) : 0;
 }
 
-export function listBatchItemCheckpoints(batchId: string): BatchItemCheckpoint[] {
-  const db = getDbInstance();
-  const rows = db
-    .prepare(
-      `
+export async function listBatchItemCheckpoints(batchId: string): Promise<BatchItemCheckpoint[]> {
+  const db = getDbClient();
+  const rows = await db.all(
+    `
       SELECT batch_id, line_number, custom_id, status, result_json, error_json, created_at, updated_at
       FROM batch_item_checkpoints
       WHERE batch_id = ?
       ORDER BY line_number ASC
-    `
-    )
-    .all(batchId);
+    `,
+    batchId
+  );
   return rows.map((row) => parseBatchItemCheckpoint(row));
 }
 
-export function markBatchItemProcessing(
+export async function markBatchItemProcessing(
   batchId: string,
   item: { lineNumber: number; customId: string | null }
-): void {
-  const db = getDbInstance();
+): Promise<void> {
+  const db = getDbClient();
   const now = Math.floor(Date.now() / 1000);
-  db.prepare(
+  await db.run(
     `
     INSERT INTO batch_item_checkpoints (
       batch_id,
@@ -270,18 +272,23 @@ export function markBatchItemProcessing(
       result_json = NULL,
       error_json = NULL,
       updated_at = excluded.updated_at
-  `
-  ).run(batchId, item.lineNumber, item.customId, now, now);
+  `,
+    batchId,
+    item.lineNumber,
+    item.customId,
+    now,
+    now
+  );
 }
 
-export function markBatchItemResult(
+export async function markBatchItemResult(
   batchId: string,
   item: { lineNumber: number; customId: string | null },
   result: any
-): void {
-  const db = getDbInstance();
+): Promise<void> {
+  const db = getDbClient();
   const now = Math.floor(Date.now() / 1000);
-  db.prepare(
+  await db.run(
     `
     UPDATE batch_item_checkpoints
     SET custom_id = ?,
@@ -290,18 +297,23 @@ export function markBatchItemResult(
         error_json = NULL,
         updated_at = ?
     WHERE batch_id = ? AND line_number = ?
-  `
-  ).run(item.customId, JSON.stringify(result), now, batchId, item.lineNumber);
+  `,
+    item.customId,
+    JSON.stringify(result),
+    now,
+    batchId,
+    item.lineNumber
+  );
 }
 
-export function markBatchItemError(
+export async function markBatchItemError(
   batchId: string,
   item: { lineNumber: number; customId: string | null },
   error: any
-): void {
-  const db = getDbInstance();
+): Promise<void> {
+  const db = getDbClient();
   const now = Math.floor(Date.now() / 1000);
-  db.prepare(
+  await db.run(
     `
     UPDATE batch_item_checkpoints
     SET custom_id = ?,
@@ -310,121 +322,135 @@ export function markBatchItemError(
         error_json = ?,
         updated_at = ?
     WHERE batch_id = ? AND line_number = ?
-  `
-  ).run(item.customId, JSON.stringify(error), now, batchId, item.lineNumber);
+  `,
+    item.customId,
+    JSON.stringify(error),
+    now,
+    batchId,
+    item.lineNumber
+  );
 }
 
-export function listBatches(apiKeyId?: string, limit: number = 20, after?: string): BatchRecord[] {
-  const db = getDbInstance();
-  const afterBatch = after ? getBatch(after) : null;
+export async function listBatches(
+  apiKeyId?: string,
+  limit: number = 20,
+  after?: string
+): Promise<BatchRecord[]> {
+  const db = getDbClient();
+  const afterBatch = after ? await getBatch(after) : null;
   let rows: any[];
   if (apiKeyId) {
     if (afterBatch) {
-      rows = db
-        .prepare(
-          "SELECT * FROM batches WHERE api_key_id = ? AND (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?"
-        )
-        .all(apiKeyId, afterBatch.createdAt, afterBatch.createdAt, after, limit);
+      rows = await db.all(
+        "SELECT * FROM batches WHERE api_key_id = ? AND (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?",
+        apiKeyId,
+        afterBatch.createdAt,
+        afterBatch.createdAt,
+        after,
+        limit
+      );
     } else {
-      rows = db
-        .prepare(
-          "SELECT * FROM batches WHERE api_key_id = ? ORDER BY created_at DESC, id DESC LIMIT ?"
-        )
-        .all(apiKeyId, limit);
+      rows = await db.all(
+        "SELECT * FROM batches WHERE api_key_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+        apiKeyId,
+        limit
+      );
     }
   } else if (afterBatch) {
-    rows = db
-      .prepare(
-        "SELECT * FROM batches WHERE (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?"
-      )
-      .all(afterBatch.createdAt, afterBatch.createdAt, after, limit);
+    rows = await db.all(
+      "SELECT * FROM batches WHERE (created_at < ? OR (created_at = ? AND id < ?)) ORDER BY created_at DESC, id DESC LIMIT ?",
+      afterBatch.createdAt,
+      afterBatch.createdAt,
+      after,
+      limit
+    );
   } else {
-    rows = db.prepare("SELECT * FROM batches ORDER BY created_at DESC, id DESC LIMIT ?").all(limit);
+    rows = await db.all(
+      "SELECT * FROM batches ORDER BY created_at DESC, id DESC LIMIT ?",
+      limit
+    );
   }
   return rows.map((row) => parseBatchRow(row));
 }
 
-export function countBatches(apiKeyId?: string): number {
-  const db = getDbInstance();
+export async function countBatches(apiKeyId?: string): Promise<number> {
+  const db = getDbClient();
   if (apiKeyId) {
-    const row = db
-      .prepare("SELECT COUNT(*) as c FROM batches WHERE api_key_id = ?")
-      .get(apiKeyId) as { c: number } | undefined;
+    const row = await db.get<{ c: number }>(
+      "SELECT COUNT(*) as c FROM batches WHERE api_key_id = ?",
+      apiKeyId
+    );
     return row ? Number(row.c) : 0;
   } else {
-    const row = db.prepare("SELECT COUNT(*) as c FROM batches").get() as { c: number } | undefined;
+    const row = await db.get<{ c: number }>("SELECT COUNT(*) as c FROM batches");
     return row ? Number(row.c) : 0;
   }
 }
 
-export function getPendingBatches(): BatchRecord[] {
-  const db = getDbInstance();
-  const rows = db
-    .prepare(
-      "SELECT * FROM batches WHERE status IN ('validating', 'in_progress', 'finalizing', 'cancelling')"
-    )
-    .all();
+export async function getPendingBatches(): Promise<BatchRecord[]> {
+  const db = getDbClient();
+  const rows = await db.all(
+    "SELECT * FROM batches WHERE status IN ('validating', 'in_progress', 'finalizing', 'cancelling')"
+  );
   return rows.map((row) => parseBatchRow(row));
 }
 
-export function getTerminalBatches(): BatchRecord[] {
-  const db = getDbInstance();
-  const rows = db
-    .prepare(
-      "SELECT * FROM batches WHERE status IN ('completed', 'failed', 'cancelled', 'expired') ORDER BY created_at ASC"
-    )
-    .all();
+export async function getTerminalBatches(): Promise<BatchRecord[]> {
+  const db = getDbClient();
+  const rows = await db.all(
+    "SELECT * FROM batches WHERE status IN ('completed', 'failed', 'cancelled', 'expired') ORDER BY created_at ASC"
+  );
   return rows.map((row) => parseBatchRow(row));
 }
 
-export function deleteBatch(id: string): boolean {
-  const db = getDbInstance();
-  const batch = getBatch(id);
+export async function deleteBatch(id: string): Promise<boolean> {
+  const db = getDbClient();
+  const batch = await getBatch(id);
   if (!batch) return false;
 
-  db.prepare("DELETE FROM batch_item_checkpoints WHERE batch_id = ?").run(id);
+  await db.run("DELETE FROM batch_item_checkpoints WHERE batch_id = ?", id);
 
   // Soft-delete associated files (input, output, error)
   if (batch.inputFileId) {
     try {
-      deleteFile(batch.inputFileId);
+      await deleteFile(batch.inputFileId);
     } catch {
       /* ignore */
     }
   }
   if (batch.outputFileId) {
     try {
-      deleteFile(batch.outputFileId);
+      await deleteFile(batch.outputFileId);
     } catch {
       /* ignore */
     }
   }
   if (batch.errorFileId) {
     try {
-      deleteFile(batch.errorFileId);
+      await deleteFile(batch.errorFileId);
     } catch {
       /* ignore */
     }
   }
 
-  const result = db.prepare("DELETE FROM batches WHERE id = ?").run(id);
+  const result = await db.run("DELETE FROM batches WHERE id = ?", id);
   return result.changes > 0;
 }
 
-export function deleteCompletedBatches(): { deletedBatches: number; deletedFiles: number } {
-  const db = getDbInstance();
+export async function deleteCompletedBatches(): Promise<{
+  deletedBatches: number;
+  deletedFiles: number;
+}> {
+  const db = getDbClient();
 
   // Collect unique file IDs from all completed batches
-  const rows = db
-    .prepare(
-      "SELECT input_file_id, output_file_id, error_file_id FROM batches WHERE status = 'completed'"
-    )
-    .all() as Array<{
+  const rows = await db.all<{
     input_file_id: string | null;
     output_file_id: string | null;
     error_file_id: string | null;
-  }>;
-
+  }>(
+    "SELECT input_file_id, output_file_id, error_file_id FROM batches WHERE status = 'completed'"
+  );
   const fileIds = new Set<string>();
   for (const row of rows) {
     if (row.input_file_id) fileIds.add(row.input_file_id);
@@ -435,16 +461,16 @@ export function deleteCompletedBatches(): { deletedBatches: number; deletedFiles
   let deletedFiles = 0;
   for (const fid of fileIds) {
     try {
-      if (deleteFile(fid)) deletedFiles++;
+      if (await deleteFile(fid)) deletedFiles++;
     } catch {
       /* ignore */
     }
   }
 
-  db.prepare(
+  await db.run(
     "DELETE FROM batch_item_checkpoints WHERE batch_id IN (SELECT id FROM batches WHERE status = 'completed')"
-  ).run();
+  );
 
-  const result = db.prepare("DELETE FROM batches WHERE status = 'completed'").run();
+  const result = await db.run("DELETE FROM batches WHERE status = 'completed'");
   return { deletedBatches: result.changes, deletedFiles };
 }

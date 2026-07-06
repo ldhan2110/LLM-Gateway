@@ -32,7 +32,7 @@ describe("Scoring", () => {
     errorRate: 0.02,
   };
 
-  it("should calculate a score between 0 and 1", () => {
+  it("should calculate a score between 0 and 1", async () => {
     const pool: ProviderCandidate[] = [
       candidate,
       {
@@ -45,18 +45,18 @@ describe("Scoring", () => {
         quotaRemaining: 70,
       },
     ];
-    const factors = calculateFactors(candidate, pool, "coding", getTaskFitness);
+    const factors = await calculateFactors(candidate, pool, "coding", getTaskFitness);
     const score = calculateScore(factors, DEFAULT_WEIGHTS);
     expect(score).toBeGreaterThan(0);
     expect(score).toBeLessThanOrEqual(1);
   });
 
-  it("OPEN circuit breaker should reduce score", () => {
+  it("OPEN circuit breaker should reduce score", async () => {
     const unhealthyCandidate: ProviderCandidate = { ...candidate, circuitBreakerState: "OPEN" };
     const pool: ProviderCandidate[] = [candidate, unhealthyCandidate];
 
-    const healthyFactors = calculateFactors(candidate, pool, "coding", getTaskFitness);
-    const unhealthyFactors = calculateFactors(unhealthyCandidate, pool, "coding", getTaskFitness);
+    const healthyFactors = await calculateFactors(candidate, pool, "coding", getTaskFitness);
+    const unhealthyFactors = await calculateFactors(unhealthyCandidate, pool, "coding", getTaskFitness);
 
     const healthy = calculateScore(healthyFactors, DEFAULT_WEIGHTS);
     const unhealthy = calculateScore(unhealthyFactors, DEFAULT_WEIGHTS);
@@ -70,13 +70,13 @@ describe("Scoring", () => {
 });
 
 describe("Task Fitness", () => {
-  it("should return fitness score for known model+task", () => {
-    const score = getTaskFitness("claude-sonnet", "coding");
+  it("should return fitness score for known model+task", async () => {
+    const score = await getTaskFitness("claude-sonnet", "coding");
     expect(score).toBeGreaterThan(0.5);
   });
 
-  it("should return 0.5 default for unknown model", () => {
-    const score = getTaskFitness("totally-unknown-model", "coding");
+  it("should return 0.5 default for unknown model", async () => {
+    const score = await getTaskFitness("totally-unknown-model", "coding");
     expect(score).toBe(0.5);
   });
 
@@ -88,9 +88,9 @@ describe("Task Fitness", () => {
     expect(types.length).toBeGreaterThanOrEqual(6);
   });
 
-  it("should boost wildcard patterns", () => {
-    const coderScore = getTaskFitness("some-coder-model", "coding");
-    const normalScore = getTaskFitness("some-random-model", "coding");
+  it("should boost wildcard patterns", async () => {
+    const coderScore = await getTaskFitness("some-coder-model", "coding");
+    const normalScore = await getTaskFitness("some-random-model", "coding");
     expect(coderScore).toBeGreaterThan(normalScore);
   });
 
@@ -108,7 +108,7 @@ describe("Task Fitness", () => {
       const { upsertModelIntelligence, deleteModelIntelligence } =
         await import("../../../../src/lib/db/modelIntelligence.ts");
       // Seed arena_elo on the base id only — no row exists for the free id.
-      upsertModelIntelligence({
+      await upsertModelIntelligence({
         model: baseId,
         source: "arena_elo",
         category: "coding",
@@ -119,34 +119,34 @@ describe("Task Fitness", () => {
       });
       invalidateFitnessCache();
       try {
-        const result = getTaskFitnessWithSource(freeId, "coding");
+        const result = await getTaskFitnessWithSource(freeId, "coding");
         // Without the fix: result.source would be "wildcard_boost" (0.5 default).
         // With the fix: result.source is "arena_elo_free_alias" with score 0.42.
         expect(result.score).toBeCloseTo(0.42, 5);
         expect(result.source).toBe("arena_elo_free_alias");
       } finally {
-        deleteModelIntelligence(baseId, "arena_elo", "coding");
+        await deleteModelIntelligence(baseId, "arena_elo", "coding");
         invalidateFitnessCache();
       }
     });
 
-    it("does not strip -free when arena_elo is present on the literal model id", () => {
+    it("does not strip -free when arena_elo is present on the literal model id", async () => {
       // If both "foo-free" and "foo" have arena_elo rows, the literal "foo-free"
       // wins (we never go through the alias path). This protects future
       // benchmark uploads that specifically tag free tiers.
-      setUserFitnessOverride("foo-free", "coding", 0.91);
-      const result = getTaskFitnessWithSource("foo-free", "coding");
+      await setUserFitnessOverride("foo-free", "coding", 0.91);
+      const result = await getTaskFitnessWithSource("foo-free", "coding");
       expect(result.score).toBe(0.91);
       expect(result.source).toBe("user_override");
-      clearUserFitnessOverride("foo-free", "coding");
+      await clearUserFitnessOverride("foo-free", "coding");
       invalidateFitnessCache();
     });
 
-    it("ignores -free suffix only at the end of the model id", () => {
+    it("ignores -free suffix only at the end of the model id", async () => {
       // "free-something" must NOT be treated as a free alias of "free-something-free"
       // — the suffix must be at the end. "mimo-free-edition" is left alone.
       // We just confirm no exception is thrown and the lookup returns a number.
-      const score = getTaskFitness("mimo-free-edition", "coding");
+      const score = await getTaskFitness("mimo-free-edition", "coding");
       expect(typeof score).toBe("number");
       expect(score).toBeGreaterThan(0);
     });
@@ -274,9 +274,9 @@ describe("SLA-aware Strategy", () => {
     },
   ];
 
-  it("should prefer candidates that satisfy latency and error-rate SLOs", () => {
+  it("should prefer candidates that satisfy latency and error-rate SLOs", async () => {
     const strategy = getStrategy("sla-aware");
-    const result = strategy.select(pool, {
+    const result = await strategy.select(pool, {
       taskType: "coding",
       sla: {
         targetP95Ms: 2000,
@@ -290,9 +290,9 @@ describe("SLA-aware Strategy", () => {
     expect(result.reason).toContain("p95=1400ms/2000ms");
   });
 
-  it("should support the sla alias and soft-fallback when no candidate satisfies all SLOs", () => {
+  it("should support the sla alias and soft-fallback when no candidate satisfies all SLOs", async () => {
     const strategy = getStrategy("sla");
-    const result = strategy.select(pool, {
+    const result = await strategy.select(pool, {
       taskType: "coding",
       sla: {
         targetP95Ms: 500,
@@ -307,7 +307,7 @@ describe("SLA-aware Strategy", () => {
     expect(result.reason).toContain("no candidate met all SLA constraints");
   });
 
-  it("should use pure score ranking in soft mode even when a compliant candidate exists", () => {
+  it("should use pure score ranking in soft mode even when a compliant candidate exists", async () => {
     const strategy = getStrategy("sla-aware");
     const softPool: ProviderCandidate[] = [
       {
@@ -334,7 +334,7 @@ describe("SLA-aware Strategy", () => {
       },
     ];
 
-    const result = strategy.select(softPool, {
+    const result = await strategy.select(softPool, {
       taskType: "coding",
       sla: {
         targetP95Ms: 2_000,
@@ -347,7 +347,7 @@ describe("SLA-aware Strategy", () => {
     expect(result.reason).not.toContain("no candidate met all SLA constraints");
   });
 
-  it("should prefer compliant candidates before score when hard constraints are enabled", () => {
+  it("should prefer compliant candidates before score when hard constraints are enabled", async () => {
     const strategy = getStrategy("sla-aware");
     const hardPool: ProviderCandidate[] = [
       {
@@ -374,7 +374,7 @@ describe("SLA-aware Strategy", () => {
       },
     ];
 
-    const result = strategy.select(hardPool, {
+    const result = await strategy.select(hardPool, {
       taskType: "coding",
       sla: {
         targetP95Ms: 2_000,
@@ -387,9 +387,9 @@ describe("SLA-aware Strategy", () => {
     expect(result.provider).toBe("compliant-but-risky");
   });
 
-  it("should give full SLO-factor credit to candidates exactly at configured thresholds", () => {
+  it("should give full SLO-factor credit to candidates exactly at configured thresholds", async () => {
     const strategy = getStrategy("sla-aware");
-    const result = strategy.select(
+    const result = await strategy.select(
       [
         {
           provider: "threshold-provider",
@@ -443,7 +443,7 @@ describe("LKGP Strategy", () => {
     },
   ];
 
-  it("should fall back to rules strategy when lkgpEnabled is false", () => {
+  it("should fall back to rules strategy when lkgpEnabled is false", async () => {
     const context: RoutingContext = {
       taskType: "coding",
       lastKnownGoodProvider: "anthropic",
@@ -452,33 +452,33 @@ describe("LKGP Strategy", () => {
     const lkgpStrategy = getStrategy("lkgp");
     const rulesStrategy = getStrategy("rules");
 
-    const lkgpResult = lkgpStrategy.select(pool, context);
-    const rulesResult = rulesStrategy.select(pool, context);
+    const lkgpResult = await lkgpStrategy.select(pool, context);
+    const rulesResult = await rulesStrategy.select(pool, context);
 
     expect(lkgpResult.strategy).toBe("rules");
     expect(lkgpResult.provider).toBe(rulesResult.provider);
   });
 
-  it("should use LKGP provider when lkgpEnabled is true", () => {
+  it("should use LKGP provider when lkgpEnabled is true", async () => {
     const context: RoutingContext = {
       taskType: "coding",
       lastKnownGoodProvider: "anthropic",
       lkgpEnabled: true,
     };
     const lkgpStrategy = getStrategy("lkgp");
-    const result = lkgpStrategy.select(pool, context);
+    const result = await lkgpStrategy.select(pool, context);
 
     expect(result.strategy).toBe("lkgp");
     expect(result.provider).toBe("anthropic");
   });
 
-  it("should use LKGP provider when lkgpEnabled is undefined (default)", () => {
+  it("should use LKGP provider when lkgpEnabled is undefined (default)", async () => {
     const context: RoutingContext = {
       taskType: "coding",
       lastKnownGoodProvider: "openai",
     };
     const lkgpStrategy = getStrategy("lkgp");
-    const result = lkgpStrategy.select(pool, context);
+    const result = await lkgpStrategy.select(pool, context);
 
     expect(result.strategy).toBe("lkgp");
     expect(result.provider).toBe("openai");
@@ -486,33 +486,33 @@ describe("LKGP Strategy", () => {
 });
 
 describe("Task Fitness Resolution Chain", () => {
-  it("getTaskFitness should return static table score for known models", () => {
-    const score = getTaskFitness("claude-sonnet", "coding");
+  it("getTaskFitness should return static table score for known models", async () => {
+    const score = await getTaskFitness("claude-sonnet", "coding");
     expect(score).toBe(0.95);
   });
 
-  it("getTaskFitness should return 0.5 for unknown models with no wildcard match", () => {
-    const score = getTaskFitness("unknown-model-xyz", "coding");
+  it("getTaskFitness should return 0.5 for unknown models with no wildcard match", async () => {
+    const score = await getTaskFitness("unknown-model-xyz", "coding");
     expect(score).toBe(0.5);
   });
 
-  it("getTaskFitness should apply wildcard boosts for model name patterns", () => {
-    const score = getTaskFitness("deepseek-coder-v2", "coding");
+  it("getTaskFitness should apply wildcard boosts for model name patterns", async () => {
+    const score = await getTaskFitness("deepseek-coder-v2", "coding");
     expect(score).toBeGreaterThan(0.5);
   });
 
-  it("getTaskFitness should apply thinking wildcard for planning tasks", () => {
-    const score = getTaskFitness("some-thinking-model", "planning");
+  it("getTaskFitness should apply thinking wildcard for planning tasks", async () => {
+    const score = await getTaskFitness("some-thinking-model", "planning");
     expect(score).toBeGreaterThan(0.5);
   });
 
-  it("getTaskFitnessWithSource should return source='fitness_table' for known static models", () => {
-    const result = getTaskFitnessWithSource("claude-sonnet", "coding");
+  it("getTaskFitnessWithSource should return source='fitness_table' for known static models", async () => {
+    const result = await getTaskFitnessWithSource("claude-sonnet", "coding");
     expect(result).toEqual({ score: 0.95, source: "fitness_table" });
   });
 
-  it("getTaskFitnessWithSource should return source='wildcard_boost' for wildcard-matched models", () => {
-    const result = getTaskFitnessWithSource("fast-model", "coding");
+  it("getTaskFitnessWithSource should return source='wildcard_boost' for wildcard-matched models", async () => {
+    const result = await getTaskFitnessWithSource("fast-model", "coding");
     expect(result).toEqual({ score: expect.any(Number), source: "wildcard_boost" });
   });
 
@@ -524,56 +524,56 @@ describe("Task Fitness Resolution Chain", () => {
     expect(types).not.toContain("default");
   });
 
-  it("unknown models should return 0.5 (default) when no DB or static entry exists", () => {
-    const score = getTaskFitness("completely-unknown-model-xyz-999", "coding");
+  it("unknown models should return 0.5 (default) when no DB or static entry exists", async () => {
+    const score = await getTaskFitness("completely-unknown-model-xyz-999", "coding");
     expect(score).toBe(0.5);
   });
 
-  it("wildcard boosts still work for models containing 'coder'", () => {
-    const score = getTaskFitness("my-coder-pro", "coding");
+  it("wildcard boosts still work for models containing 'coder'", async () => {
+    const score = await getTaskFitness("my-coder-pro", "coding");
     // Base 0.5 + coder boost 0.15 + code boost 0.1 = 0.75
     // "coder" contains "code", so both wildcard patterns match
     expect(score).toBe(0.75);
   });
 
-  it("wildcard boosts still work for models containing 'thinking'", () => {
-    const score = getTaskFitness("my-thinking-model", "planning");
+  it("wildcard boosts still work for models containing 'thinking'", async () => {
+    const score = await getTaskFitness("my-thinking-model", "planning");
     // Base 0.5 + thinking boost 0.1 = 0.6
     expect(score).toBe(0.6);
   });
 
-  it("wildcard boosts still work for models containing 'thinking' for analysis tasks", () => {
-    const score = getTaskFitness("my-thinking-model", "analysis");
+  it("wildcard boosts still work for models containing 'thinking' for analysis tasks", async () => {
+    const score = await getTaskFitness("my-thinking-model", "analysis");
     // Base 0.5 + thinking boost 0.1 = 0.6
     expect(score).toBe(0.6);
   });
 
-  it("wildcard boosts for 'code' pattern apply to coding tasks", () => {
-    const score = getTaskFitness("my-code-generator", "coding");
+  it("wildcard boosts for 'code' pattern apply to coding tasks", async () => {
+    const score = await getTaskFitness("my-code-generator", "coding");
     // Base 0.5 + code boost 0.1 = 0.6
     expect(score).toBe(0.6);
   });
 
-  it("wildcard boosts for 'fast' pattern apply to coding tasks", () => {
-    const score = getTaskFitness("my-fast-model", "coding");
+  it("wildcard boosts for 'fast' pattern apply to coding tasks", async () => {
+    const score = await getTaskFitness("my-fast-model", "coding");
     // Base 0.5 + fast boost 0.05 = 0.55
     expect(score).toBe(0.55);
   });
 
-  it("getTaskFitnessWithSource returns 'wildcard_boost' for pattern-matched unknown models", () => {
-    const result = getTaskFitnessWithSource("my-coder-pro", "coding");
+  it("getTaskFitnessWithSource returns 'wildcard_boost' for pattern-matched unknown models", async () => {
+    const result = await getTaskFitnessWithSource("my-coder-pro", "coding");
     expect(result.source).toBe("wildcard_boost");
     expect(result.score).toBeGreaterThan(0.5);
   });
 
-  it("getTaskFitnessWithSource returns 'fitness_table' for statically known models", () => {
-    const result = getTaskFitnessWithSource("claude-sonnet", "review");
+  it("getTaskFitnessWithSource returns 'fitness_table' for statically known models", async () => {
+    const result = await getTaskFitnessWithSource("claude-sonnet", "review");
     expect(result.source).toBe("fitness_table");
     expect(result.score).toBe(0.92);
   });
 
-  it("getTaskFitnessWithSource returns 'wildcard_boost' with 0.5 for unknown models with no pattern", () => {
-    const result = getTaskFitnessWithSource("totally-random-xyz", "coding");
+  it("getTaskFitnessWithSource returns 'wildcard_boost' with 0.5 for unknown models with no pattern", async () => {
+    const result = await getTaskFitnessWithSource("totally-random-xyz", "coding");
     expect(result.source).toBe("wildcard_boost");
     expect(result.score).toBe(0.5);
   });
@@ -585,30 +585,30 @@ describe("Task Fitness DB Resolution Chain", () => {
   // works correctly. Since the DB module is loaded lazily via require(),
   // these tests cover the cases where DB is NOT available (graceful fallback).
 
-  it("falls back to static FITNESS_TABLE when DB is not initialized", () => {
+  it("falls back to static FITNESS_TABLE when DB is not initialized", async () => {
     // In the test environment, DB is typically not initialized,
     // so getTaskFitness should fall through to the static table
-    const score = getTaskFitness("claude-sonnet", "coding");
+    const score = await getTaskFitness("claude-sonnet", "coding");
     // Static table has claude-sonnet → 0.95 for coding
     expect(score).toBe(0.95);
   });
 
-  it("falls back to static FITNESS_TABLE for review task type", () => {
-    const score = getTaskFitness("claude-opus", "review");
+  it("falls back to static FITNESS_TABLE for review task type", async () => {
+    const score = await getTaskFitness("claude-opus", "review");
     // Static table has claude-opus → 0.95 for review
     expect(score).toBe(0.95);
   });
 
-  it("falls back to wildcard boosts when no static entry exists and DB unavailable", () => {
+  it("falls back to wildcard boosts when no static entry exists and DB unavailable", async () => {
     // "coder-unknown" has no static entry but matches "coder" wildcard
-    const score = getTaskFitness("coder-unknown", "coding");
+    const score = await getTaskFitness("coder-unknown", "coding");
     expect(score).toBeGreaterThan(0.5);
     expect(score).toBeLessThanOrEqual(1.0);
   });
 
-  it("getModelsDevTierFitness returns null when DB is not initialized", () => {
+  it("getModelsDevTierFitness returns null when DB is not initialized", async () => {
     // Without a running DB, this should return null gracefully
-    const score = getModelsDevTierFitness("claude-sonnet", "coding");
+    const score = await getModelsDevTierFitness("claude-sonnet", "coding");
     // Either null (no capabilities data) or a number from DB if DB happens to be up
     if (score !== null) {
       expect(score).toBeGreaterThanOrEqual(0);
@@ -620,31 +620,31 @@ describe("Task Fitness DB Resolution Chain", () => {
     expect(() => invalidateFitnessCache()).not.toThrow();
   });
 
-  it("resolution chain: static table takes priority over wildcard for known models", () => {
+  it("resolution chain: static table takes priority over wildcard for known models", async () => {
     // "claude-sonnet" is in the static table with coding=0.95
     // It does NOT match "coder" wildcard because the static table is checked first
-    const score = getTaskFitness("claude-sonnet", "coding");
+    const score = await getTaskFitness("claude-sonnet", "coding");
     expect(score).toBe(0.95); // From static table, NOT wildcard
   });
 
-  it("getTaskFitnessWithSource identifies fitness_table as source for known models", () => {
+  it("getTaskFitnessWithSource identifies fitness_table as source for known models", async () => {
     const model = "claude-sonnet";
     const category = "coding";
 
-    const result = getTaskFitnessWithSource(model, category);
+    const result = await getTaskFitnessWithSource(model, category);
     expect(result.source).toBe("fitness_table");
     expect(result.score).toBe(0.95);
   });
 
-  it("case insensitivity: model names are lowercased before lookup", () => {
-    const upperScore = getTaskFitness("CLAUDE-SONNET", "coding");
-    const lowerScore = getTaskFitness("claude-sonnet", "coding");
+  it("case insensitivity: model names are lowercased before lookup", async () => {
+    const upperScore = await getTaskFitness("CLAUDE-SONNET", "coding");
+    const lowerScore = await getTaskFitness("claude-sonnet", "coding");
     expect(upperScore).toBe(lowerScore);
   });
 
-  it("case insensitivity: task types are lowercased before lookup", () => {
-    const upperScore = getTaskFitness("claude-sonnet", "CODING");
-    const lowerScore = getTaskFitness("claude-sonnet", "coding");
+  it("case insensitivity: task types are lowercased before lookup", async () => {
+    const upperScore = await getTaskFitness("claude-sonnet", "CODING");
+    const lowerScore = await getTaskFitness("claude-sonnet", "coding");
     expect(upperScore).toBe(lowerScore);
   });
 });

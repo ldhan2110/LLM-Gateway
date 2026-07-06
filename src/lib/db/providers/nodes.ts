@@ -3,37 +3,28 @@
  */
 
 import { v4 as uuidv4 } from "uuid";
-import { getDbInstance, rowToCamel } from "../core";
+import { getDbClient, rowToCamel } from "../core";
 import { selectProviderNodeForConnection } from "../providerNodeSelect";
 import { backupDbFile } from "../backup";
 import { toRecord, type JsonRecord } from "./columns";
 
-interface StatementLike<TRow = unknown> {
-  all: (...params: unknown[]) => TRow[];
-  get: (...params: unknown[]) => TRow | undefined;
-  run: (...params: unknown[]) => { changes?: number };
-}
-
-interface DbLike {
-  prepare: <TRow = unknown>(sql: string) => StatementLike<TRow>;
-}
-
 export async function getProviderNodes(filter: JsonRecord = {}) {
-  const db = getDbInstance() as unknown as DbLike;
+  const db = getDbClient();
   let sql = "SELECT * FROM provider_nodes";
-  const params: Record<string, unknown> = {};
+  const params: unknown[] = [];
 
   if (filter.type) {
-    sql += " WHERE type = @type";
-    params.type = filter.type;
+    sql += " WHERE type = ?";
+    params.push(filter.type);
   }
 
-  return db.prepare(sql).all(params).map(rowToCamel);
+  const rows = await db.all(sql, ...params);
+  return rows.map(rowToCamel);
 }
 
 export async function getProviderNodeById(id: string) {
-  const db = getDbInstance() as unknown as DbLike;
-  const row = db.prepare("SELECT * FROM provider_nodes WHERE id = ?").get(id);
+  const db = getDbClient();
+  const row = await db.get("SELECT * FROM provider_nodes WHERE id = ?", id);
   return row ? rowToCamel(row) : null;
 }
 
@@ -50,7 +41,7 @@ export async function resolveProviderNodeForConnection(idOrType: string) {
 }
 
 export async function createProviderNode(data: JsonRecord) {
-  const db = getDbInstance() as unknown as DbLike;
+  const db = getDbClient();
   const now = new Date().toISOString();
 
   const customHeadersJson = data.customHeaders ? JSON.stringify(data.customHeaders) : null;
@@ -71,12 +62,22 @@ export async function createProviderNode(data: JsonRecord) {
     updatedAt: now,
   };
 
-  db.prepare(
-    `
-    INSERT INTO provider_nodes (id, type, name, prefix, api_type, base_url, chat_path, models_path, icon_url, custom_headers_json, created_at, updated_at)
-    VALUES (@id, @type, @name, @prefix, @apiType, @baseUrl, @chatPath, @modelsPath, @iconUrl, @customHeadersJson, @createdAt, @updatedAt)
-  `
-  ).run(node);
+  await db.run(
+    `INSERT INTO provider_nodes (id, type, name, prefix, api_type, base_url, chat_path, models_path, icon_url, custom_headers_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    node.id,
+    node.type,
+    node.name,
+    node.prefix,
+    node.apiType,
+    node.baseUrl,
+    node.chatPath,
+    node.modelsPath,
+    node.iconUrl,
+    node.customHeadersJson,
+    node.createdAt,
+    node.updatedAt
+  );
 
   backupDbFile("pre-write");
 
@@ -95,8 +96,8 @@ export async function createProviderNode(data: JsonRecord) {
 }
 
 export async function updateProviderNode(id: string, data: JsonRecord) {
-  const db = getDbInstance() as unknown as DbLike;
-  const existing = db.prepare("SELECT * FROM provider_nodes WHERE id = ?").get(id);
+  const db = getDbClient();
+  const existing = await db.get("SELECT * FROM provider_nodes WHERE id = ?", id);
   if (!existing) return null;
 
   const merged: JsonRecord = {
@@ -117,29 +118,26 @@ export async function updateProviderNode(id: string, data: JsonRecord) {
     merged["customHeadersJson"] = typeof existingJson === "string" ? existingJson : null;
   }
 
-  db.prepare(
-    `
-    UPDATE provider_nodes SET type = @type, name = @name, prefix = @prefix,
-    api_type = @apiType, base_url = @baseUrl, chat_path = @chatPath,
-    models_path = @modelsPath, icon_url = @iconUrl,
-    custom_headers_json = @customHeadersJson, updated_at = @updatedAt
-    WHERE id = @id
-  `
-  ).run({
-    id,
-    type: merged["type"],
-    name: merged["name"],
-    prefix: merged["prefix"] || null,
-    apiType: merged["apiType"] || null,
-    baseUrl: merged["baseUrl"] || null,
-    chatPath: merged["chatPath"] || null,
-    modelsPath: merged["modelsPath"] || null,
+  await db.run(
+    `UPDATE provider_nodes SET type = ?, name = ?, prefix = ?,
+    api_type = ?, base_url = ?, chat_path = ?,
+    models_path = ?, icon_url = ?,
+    custom_headers_json = ?, updated_at = ?
+    WHERE id = ?`,
+    merged["type"],
+    merged["name"],
+    merged["prefix"] || null,
+    merged["apiType"] || null,
+    merged["baseUrl"] || null,
+    merged["chatPath"] || null,
+    merged["modelsPath"] || null,
     // #2166: iconUrl is nullable — explicit `null` (not omission) clears a previously
     // stored custom icon when the caller submits an empty value.
-    iconUrl: merged["iconUrl"] || null,
-    customHeadersJson: merged["customHeadersJson"] || null,
-    updatedAt: merged["updatedAt"],
-  });
+    merged["iconUrl"] || null,
+    merged["customHeadersJson"] || null,
+    merged["updatedAt"],
+    id
+  );
 
   backupDbFile("pre-write");
 
@@ -159,11 +157,11 @@ export async function updateProviderNode(id: string, data: JsonRecord) {
 }
 
 export async function deleteProviderNode(id: string) {
-  const db = getDbInstance() as unknown as DbLike;
-  const existing = db.prepare("SELECT * FROM provider_nodes WHERE id = ?").get(id);
+  const db = getDbClient();
+  const existing = await db.get("SELECT * FROM provider_nodes WHERE id = ?", id);
   if (!existing) return null;
 
-  db.prepare("DELETE FROM provider_nodes WHERE id = ?").run(id);
+  await db.run("DELETE FROM provider_nodes WHERE id = ?", id);
   backupDbFile("pre-write");
   return rowToCamel(existing);
 }

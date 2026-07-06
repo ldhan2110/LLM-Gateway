@@ -42,19 +42,19 @@ export async function GET(request: Request) {
     const logLimit = parseInt(url.searchParams.get("logLimit") || "10", 10);
 
     if (hookName) {
-      const hook = getMiddlewareHook(hookName);
+      const hook = await getMiddlewareHook(hookName);
       if (!hook) {
         return NextResponse.json({ error: "Hook not found" }, { status: 404 });
       }
 
       const result: Record<string, unknown> = { hook };
       if (includeLogs) {
-        result.logs = getHookLogs(hookName, logLimit);
+        result.logs = await getHookLogs(hookName, logLimit);
       }
       return NextResponse.json(result);
     }
 
-    const hooks = getAllMiddlewareHooks();
+    const hooks = await getAllMiddlewareHooks();
     const registryHooks = getAllHooks();
 
     return NextResponse.json({
@@ -88,7 +88,7 @@ export async function POST(request: Request) {
     const body: CreateHookRequest = validation.data;
 
     // Check for duplicate
-    const existing = getMiddlewareHook(body.name);
+    const existing = await getMiddlewareHook(body.name);
     if (existing) {
       return NextResponse.json({ error: `Hook "${body.name}" already exists` }, { status: 409 });
     }
@@ -106,7 +106,7 @@ export async function POST(request: Request) {
     };
 
     // Persist to DB
-    const saved = createMiddlewareHook(hookConfig);
+    const saved = await createMiddlewareHook(hookConfig);
 
     // Register in runtime registry
     registerHook(saved);

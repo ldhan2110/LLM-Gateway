@@ -1,4 +1,4 @@
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 
 // #5618 — node:sqlite's StatementSync.all() materializes the ENTIRE result set as
 // JS objects at once. On a large storage.sqlite (~170 MB+) an unbounded
@@ -12,14 +12,15 @@ const CALL_LOG_QUERY_PAGE = 5000;
  * Collect every non-null `artifact_relpath` referenced by call_logs, paging with
  * LIMIT/OFFSET so a huge table never loads into memory in one `.all()`.
  */
-export function collectReferencedArtifacts(): Set<string> {
-  const db = getDbInstance();
+export async function collectReferencedArtifacts(): Promise<Set<string>> {
+  const db = getDbClient();
   const referenced = new Set<string>();
-  const stmt = db.prepare(
-    "SELECT artifact_relpath FROM call_logs WHERE artifact_relpath IS NOT NULL LIMIT ? OFFSET ?"
-  );
   for (let offset = 0; ; offset += CALL_LOG_QUERY_PAGE) {
-    const rows = stmt.all(CALL_LOG_QUERY_PAGE, offset) as Array<{ artifact_relpath: string | null }>;
+    const rows = await db.all<{ artifact_relpath: string | null }>(
+      "SELECT artifact_relpath FROM call_logs WHERE artifact_relpath IS NOT NULL LIMIT ? OFFSET ?",
+      CALL_LOG_QUERY_PAGE,
+      offset
+    );
     for (const row of rows) {
       if (typeof row.artifact_relpath === "string") referenced.add(row.artifact_relpath);
     }
@@ -33,10 +34,15 @@ export function collectReferencedArtifacts(): Set<string> {
  * Callers loop until it returns an empty page, deleting each batch, so the id
  * list never grows to the full retention backlog at once.
  */
-export function selectCallLogIdsBefore(cutoff: string, limit = CALL_LOG_QUERY_PAGE): string[] {
-  const db = getDbInstance();
-  const rows = db
-    .prepare("SELECT id FROM call_logs WHERE timestamp < ? ORDER BY timestamp ASC LIMIT ?")
-    .all(cutoff, limit) as Array<{ id: string }>;
+export async function selectCallLogIdsBefore(
+  cutoff: string,
+  limit = CALL_LOG_QUERY_PAGE
+): Promise<string[]> {
+  const db = getDbClient();
+  const rows = await db.all<{ id: string }>(
+    "SELECT id FROM call_logs WHERE timestamp < ? ORDER BY timestamp ASC LIMIT ?",
+    cutoff,
+    limit
+  );
   return rows.map((row) => String(row.id));
 }

@@ -51,7 +51,7 @@ export async function POST(request: Request) {
     }
   }
 
-  const consumed = consumeCommandCodeAuthSecret(stateHashFromState(parsed.data.state));
+  const consumed = await consumeCommandCodeAuthSecret(stateHashFromState(parsed.data.state));
   if (!consumed) {
     return noStoreJson(
       { error: "No received Command Code API key for this state" },

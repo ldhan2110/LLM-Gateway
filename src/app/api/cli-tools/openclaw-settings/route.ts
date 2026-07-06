@@ -159,7 +159,7 @@ export async function POST(request: Request) {
 
     // Persist last-configured timestamp
     try {
-      saveCliToolLastConfigured("openclaw");
+      await saveCliToolLastConfigured("openclaw");
     } catch {
       /* non-critical */
     }
@@ -226,7 +226,7 @@ export async function DELETE(request: Request) {
 
     // Clear last-configured timestamp
     try {
-      deleteCliToolLastConfigured("openclaw");
+      await deleteCliToolLastConfigured("openclaw");
     } catch {
       /* non-critical */
     }

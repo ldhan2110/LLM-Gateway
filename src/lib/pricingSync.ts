@@ -10,7 +10,7 @@
  * Opt-in via PRICING_SYNC_ENABLED=true (default: false).
  */
 
-import { getDbInstance } from "./db/core";
+import { getDbClient } from "./db/core";
 import { invalidateDbCache } from "./db/readCache";
 import { backupDbFile } from "./db/backup";
 
@@ -235,11 +235,9 @@ function toRecord(value: unknown): Record<string, unknown> {
 /**
  * Read synced pricing from `pricing_synced` namespace.
  */
-export function getSyncedPricing(): PricingByProvider {
-  const db = getDbInstance();
-  const rows = db
-    .prepare("SELECT key, value FROM key_value WHERE namespace = 'pricing_synced'")
-    .all();
+export async function getSyncedPricing(): Promise<PricingByProvider> {
+  const db = getDbClient();
+  const rows = await db.all("SELECT key, value FROM key_value WHERE namespace = 'pricing_synced'");
   const synced: PricingByProvider = {};
   for (const row of rows) {
     const record = toRecord(row);
@@ -258,19 +256,18 @@ export function getSyncedPricing(): PricingByProvider {
 /**
  * Save synced pricing to `pricing_synced` namespace (full replace).
  */
-export function saveSyncedPricing(data: PricingByProvider): void {
-  const db = getDbInstance();
-  const del = db.prepare("DELETE FROM key_value WHERE namespace = 'pricing_synced'");
-  const insert = db.prepare(
-    "INSERT INTO key_value (namespace, key, value) VALUES ('pricing_synced', ?, ?)"
-  );
-  const tx = db.transaction(() => {
-    del.run();
+export async function saveSyncedPricing(data: PricingByProvider): Promise<void> {
+  const db = getDbClient();
+  await db.transaction(async (c) => {
+    await c.run("DELETE FROM key_value WHERE namespace = 'pricing_synced'");
     for (const [provider, models] of Object.entries(data)) {
-      insert.run(provider, JSON.stringify(models));
+      await c.run(
+        "INSERT INTO key_value (namespace, key, value) VALUES ('pricing_synced', ?, ?)",
+        provider,
+        JSON.stringify(models)
+      );
     }
   });
-  tx();
   backupDbFile("pre-write");
   invalidateDbCache("pricing");
 }
@@ -278,9 +275,9 @@ export function saveSyncedPricing(data: PricingByProvider): void {
 /**
  * Clear all synced pricing data.
  */
-export function clearSyncedPricing(): void {
-  const db = getDbInstance();
-  db.prepare("DELETE FROM key_value WHERE namespace = 'pricing_synced'").run();
+export async function clearSyncedPricing(): Promise<void> {
+  const db = getDbClient();
+  await db.run("DELETE FROM key_value WHERE namespace = 'pricing_synced'");
   backupDbFile("pre-write");
   invalidateDbCache("pricing");
 }
@@ -338,7 +335,7 @@ export async function syncPricingFromSources(opts?: {
     const providerCount = Object.keys(aggregated).length;
 
     if (!dryRun) {
-      saveSyncedPricing(aggregated);
+      await saveSyncedPricing(aggregated);
       lastSyncTime = new Date().toISOString();
       lastSyncModelCount = modelCount;
     }

@@ -67,7 +67,7 @@ test.after(async () => {
 beforeEach(async () => {
   clearAllModelLockouts();
   clearCooldownState();
-  settingsDb.clearAllLKGP();
+  await settingsDb.clearAllLKGP();
 });
 
 describe("combo selected connection success handling", () => {

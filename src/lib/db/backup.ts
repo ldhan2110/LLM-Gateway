@@ -6,6 +6,7 @@ import path from "path";
 import fs from "fs";
 import {
   getDbInstance,
+  getDbClient,
   resetDbInstance,
   isBuildPhase,
   isCloud,
@@ -568,17 +569,12 @@ export async function restoreDbBackup(backupId: string) {
   fs.copyFileSync(backupPath, sqliteFile);
 
   // Reopen
-  const db = getDbInstance();
-  const connCount =
-    (db.prepare("SELECT COUNT(*) as cnt FROM provider_connections").get() as CountRow | undefined)
-      ?.cnt || 0;
-  const nodeCount =
-    (db.prepare("SELECT COUNT(*) as cnt FROM provider_nodes").get() as CountRow | undefined)?.cnt ||
-    0;
-  const comboCount =
-    (db.prepare("SELECT COUNT(*) as cnt FROM combos").get() as CountRow | undefined)?.cnt || 0;
-  const keyCount =
-    (db.prepare("SELECT COUNT(*) as cnt FROM api_keys").get() as CountRow | undefined)?.cnt || 0;
+  getDbInstance();
+  const db = getDbClient();
+  const connCount = (await db.get<CountRow>("SELECT COUNT(*) as cnt FROM provider_connections"))?.cnt || 0;
+  const nodeCount = (await db.get<CountRow>("SELECT COUNT(*) as cnt FROM provider_nodes"))?.cnt || 0;
+  const comboCount = (await db.get<CountRow>("SELECT COUNT(*) as cnt FROM combos"))?.cnt || 0;
+  const keyCount = (await db.get<CountRow>("SELECT COUNT(*) as cnt FROM api_keys"))?.cnt || 0;
 
   console.log(`[DB] Restored backup: ${backupId} (${connCount} connections)`);
 
@@ -614,15 +610,12 @@ export interface ExportAllRows {
  * Each category is wrapped in a try/catch so a missing table never aborts the
  * entire export — consistent with the original inline behaviour.
  */
-export function exportAllSummaryRows(): ExportAllRows {
-  const db = getDbInstance();
+export async function exportAllSummaryRows(): Promise<ExportAllRows> {
+  const db = getDbClient();
 
   const settings: Record<string, string> = {};
   try {
-    const rows = db.prepare("SELECT key, value FROM key_value").all() as {
-      key: string;
-      value: string;
-    }[];
+    const rows = await db.all<{ key: string; value: string }>("SELECT key, value FROM key_value");
     for (const row of rows) {
       settings[row.key] = row.value;
     }
@@ -632,7 +625,7 @@ export function exportAllSummaryRows(): ExportAllRows {
 
   const combos: unknown[] = [];
   try {
-    combos.push(...db.prepare("SELECT * FROM combos").all());
+    combos.push(...(await db.all("SELECT * FROM combos")));
   } catch {
     // combos table might not exist
   }
@@ -640,11 +633,9 @@ export function exportAllSummaryRows(): ExportAllRows {
   const providers: unknown[] = [];
   try {
     providers.push(
-      ...db
-        .prepare(
-          "SELECT id, provider, name, auth_type, is_active, email, created_at FROM provider_connections"
-        )
-        .all()
+      ...(await db.all(
+        "SELECT id, provider, name, auth_type, is_active, email, created_at FROM provider_connections"
+      ))
     );
   } catch {
     // provider_connections table might not exist
@@ -653,11 +644,9 @@ export function exportAllSummaryRows(): ExportAllRows {
   const apiKeys: unknown[] = [];
   try {
     apiKeys.push(
-      ...db
-        .prepare(
-          "SELECT id, name, substr(key, 1, 8) as prefix, machine_id, created_at FROM api_keys"
-        )
-        .all()
+      ...(await db.all(
+        "SELECT id, name, substr(key, 1, 8) as prefix, machine_id, created_at FROM api_keys"
+      ))
     );
   } catch {
     // api_keys table might not exist
@@ -691,18 +680,16 @@ export function getTableNamesFromAdapter(adapter: {
  * Counts rows in a set of tables from the **live** database (post-import).
  * Returns an object keyed by table name with the row count as value.
  */
-export function countImportedRows(): {
+export async function countImportedRows(): Promise<{
   connCount: number;
   nodeCount: number;
   comboCount: number;
   keyCount: number;
-} {
-  const db = getDbInstance();
-  const connCount =
-    (db.prepare("SELECT COUNT(*) as cnt FROM provider_connections").get() as any)?.cnt || 0;
-  const nodeCount =
-    (db.prepare("SELECT COUNT(*) as cnt FROM provider_nodes").get() as any)?.cnt || 0;
-  const comboCount = (db.prepare("SELECT COUNT(*) as cnt FROM combos").get() as any)?.cnt || 0;
-  const keyCount = (db.prepare("SELECT COUNT(*) as cnt FROM api_keys").get() as any)?.cnt || 0;
+}> {
+  const db = getDbClient();
+  const connCount = (await db.get<CountRow>("SELECT COUNT(*) as cnt FROM provider_connections"))?.cnt || 0;
+  const nodeCount = (await db.get<CountRow>("SELECT COUNT(*) as cnt FROM provider_nodes"))?.cnt || 0;
+  const comboCount = (await db.get<CountRow>("SELECT COUNT(*) as cnt FROM combos"))?.cnt || 0;
+  const keyCount = (await db.get<CountRow>("SELECT COUNT(*) as cnt FROM api_keys"))?.cnt || 0;
   return { connCount, nodeCount, comboCount, keyCount };
 }

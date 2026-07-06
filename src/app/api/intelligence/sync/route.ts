@@ -71,7 +71,7 @@ export async function DELETE(request: NextRequest) {
 
   try {
     const { clearSyncedIntelligence } = await import("@/lib/arenaEloSync");
-    clearSyncedIntelligence();
+    await clearSyncedIntelligence();
     return NextResponse.json({ success: true, message: "Synced intelligence data cleared" });
   } catch (err) {
     return NextResponse.json(

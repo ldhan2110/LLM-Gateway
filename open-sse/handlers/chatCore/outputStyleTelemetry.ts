@@ -42,7 +42,7 @@ export function emitOutputStyleTelemetry(args: {
         appliedStyles: result.appliedStyles,
         skippedReason: result.skippedReason,
       });
-      insertCompressionRunTelemetryRow(record);
+      await insertCompressionRunTelemetryRow(record);
     } catch (err) {
       args.log?.debug?.(
         "COMPRESSION",

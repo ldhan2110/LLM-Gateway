@@ -249,7 +249,7 @@ test("rotateCallLogs removes expired rows and orphaned artifacts but keeps fresh
   assert.equal(fs.existsSync(oldAbsPath), true);
   assert.equal(fs.existsSync(freshAbsPath), true);
 
-  callLogs.rotateCallLogs();
+  await callLogs.rotateCallLogs();
 
   const db = core.getDbInstance();
   assert.equal(
@@ -268,7 +268,7 @@ test("rotateCallLogs removes expired rows and orphaned artifacts but keeps fresh
   const orphanFile = path.join(orphanDir, "orphan.json");
   fs.mkdirSync(orphanDir, { recursive: true });
   fs.writeFileSync(orphanFile, "{}");
-  callLogs.cleanupOrphanCallLogFiles();
+  await callLogs.cleanupOrphanCallLogFiles();
   assert.equal(fs.existsSync(orphanFile), false);
 
   process.env.CALL_LOG_RETENTION_DAYS = "3650";
@@ -404,7 +404,7 @@ test("getCallLogById falls back to legacy inline rows and request_detail_logs", 
     JSON.stringify({ message: "legacy-error" })
   );
 
-  detailedLogs.saveRequestDetailLog({
+  await detailedLogs.saveRequestDetailLog({
     call_log_id: "legacy-read",
     client_request: { body: { from: "detail-client" } },
     translated_request: { body: { from: "detail-provider-request" } },

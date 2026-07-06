@@ -5,8 +5,10 @@ import { AI_PROVIDERS } from "@/shared/constants/providers";
 export async function GET() {
   try {
     // Hard Rule #5: SQL lives in src/lib/db/providerStats.ts, not inline here.
-    const providerStats = getProviderCallStats();
-    const modelStats = getModelCallStats();
+    const [providerStats, modelStats] = await Promise.all([
+      getProviderCallStats(),
+      getModelCallStats(),
+    ]);
 
     let comboMetrics: Record<string, unknown> = {};
     try {

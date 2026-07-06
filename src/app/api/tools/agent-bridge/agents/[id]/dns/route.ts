@@ -45,7 +45,7 @@ export async function POST(request: Request, { params }: Params): Promise<Respon
       await removeDNSEntry(sudoPassword);
     }
 
-    upsertAgentBridgeState({ agent_id: id, dns_enabled: enabled });
+    await upsertAgentBridgeState({ agent_id: id, dns_enabled: enabled });
 
     return Response.json({ ok: true, dns_enabled: enabled });
   } catch (err) {

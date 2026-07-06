@@ -14,9 +14,8 @@
 
 // ─── Static fitness table (unchanged, fallback layer 4) ─────────────────
 
-import { getDbInstance } from "../../../src/lib/db/core.ts";
+import { getDbClient } from "../../../src/lib/db/core.ts";
 import {
-  getModelIntelligenceBySource,
   setUserFitnessOverrideEntry,
   deleteUserFitnessOverrideEntry,
 } from "../../../src/lib/db/modelIntelligence.ts";
@@ -199,17 +198,24 @@ const TIER_TASK_FITNESS: Record<string, Record<string, number>> = {
 
 const _intelligenceCache = new Map<string, number | null>();
 
-function queryModelIntelligence(model: string, category: string, source: string): number | null {
+async function queryModelIntelligence(model: string, category: string, source: string): Promise<number | null> {
   const cacheKey = `${model}:${category}:${source}`;
   if (_intelligenceCache.has(cacheKey)) {
     return _intelligenceCache.get(cacheKey)!;
   }
 
   try {
-    const entry = getModelIntelligenceBySource(model, source, category);
-    if (entry) {
-      _intelligenceCache.set(cacheKey, entry.score);
-      return entry.score;
+    const db = getDbClient();
+    const row = await db.get<Record<string, unknown>>(
+      `SELECT * FROM model_intelligence
+       WHERE model = ? AND source = ? AND category = ?
+         AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))`,
+      model, source, category
+    );
+    if (row) {
+      const score = typeof row.score === "number" ? row.score : 0;
+      _intelligenceCache.set(cacheKey, score);
+      return score;
     }
     return null;
   } catch {
@@ -234,12 +240,12 @@ function deriveTierFromCapabilities(cap: ModelCapRow): string {
   return "budget";
 }
 
-function loadModelCapabilities(): Record<string, ModelCapRow> | null {
+async function loadModelCapabilities(): Promise<Record<string, ModelCapRow> | null> {
   if (_capabilitiesCache) return _capabilitiesCache;
 
   try {
-    const db = getDbInstance();
-    const rows = db.prepare("SELECT * FROM model_capabilities").all() as Record<string, unknown>[];
+    const db = getDbClient();
+    const rows = await db.all<Record<string, unknown>>("SELECT * FROM model_capabilities");
     const cache: Record<string, ModelCapRow> = {};
 
     for (const row of rows) {
@@ -270,14 +276,14 @@ function loadModelCapabilities(): Record<string, ModelCapRow> | null {
   }
 }
 
-export function getModelsDevTierFitness(model: string, taskType: string): number | null {
+export async function getModelsDevTierFitness(model: string, taskType: string): Promise<number | null> {
   const normalizedModel = model.toLowerCase();
   const normalizedTask = taskType.toLowerCase();
 
-  const dbScore = queryModelIntelligence(normalizedModel, normalizedTask, "models_dev_tier");
+  const dbScore = await queryModelIntelligence(normalizedModel, normalizedTask, "models_dev_tier");
   if (dbScore !== null) return dbScore;
 
-  const caps = loadModelCapabilities();
+  const caps = await loadModelCapabilities();
   if (!caps) return null;
 
   const capRow = caps[normalizedModel];
@@ -310,18 +316,18 @@ function lookupWildcardBoosts(normalizedModel: string, normalizedTask: string): 
   return Math.min(1.0, baseScore);
 }
 
-export function getTaskFitness(model: string, taskType: string): number {
-  return getTaskFitnessWithSource(model, taskType).score;
+export async function getTaskFitness(model: string, taskType: string): Promise<number> {
+  return (await getTaskFitnessWithSource(model, taskType)).score;
 }
 
-export function getTaskFitnessWithSource(
+export async function getTaskFitnessWithSource(
   model: string,
   taskType: string
-): { score: number; source: string } {
+): Promise<{ score: number; source: string }> {
   const normalizedModel = model.toLowerCase();
   const normalizedTask = taskType.toLowerCase();
 
-  const userOverride = queryModelIntelligence(normalizedModel, normalizedTask, "user_override");
+  const userOverride = await queryModelIntelligence(normalizedModel, normalizedTask, "user_override");
   if (userOverride !== null) {
     return { score: userOverride, source: "user_override" };
   }
@@ -333,16 +339,16 @@ export function getTaskFitnessWithSource(
   // upstream's `mimo-v2.5` is benchmarked once, and `mimo-v2.5-free` should
   // pick up the same signal rather than falling through to the wildcard 0.5
   // and losing every free-vs-paid comparison.
-  const arenaElo = queryModelIntelligence(normalizedModel, normalizedTask, "arena_elo");
+  const arenaElo = await queryModelIntelligence(normalizedModel, normalizedTask, "arena_elo");
   if (arenaElo !== null) {
     return { score: arenaElo, source: "arena_elo" };
   }
-  const arenaEloBase = lookupFreeAliasArenaElo(normalizedModel, normalizedTask);
+  const arenaEloBase = await lookupFreeAliasArenaElo(normalizedModel, normalizedTask);
   if (arenaEloBase !== null) {
     return { score: arenaEloBase, source: "arena_elo_free_alias" };
   }
 
-  const tierScore = getModelsDevTierFitness(normalizedModel, normalizedTask);
+  const tierScore = await getModelsDevTierFitness(normalizedModel, normalizedTask);
   if (tierScore !== null) {
     return { score: tierScore, source: "models_dev_tier" };
   }
@@ -368,16 +374,16 @@ const FREE_SUFFIX = "-free";
  *   "deepseek-v4-flash-free" → look up "deepseek-v4-flash"
  *   "big-pickle"       → no "-free" suffix → return null (skip)
  */
-function lookupFreeAliasArenaElo(normalizedModel: string, normalizedTask: string): number | null {
+async function lookupFreeAliasArenaElo(normalizedModel: string, normalizedTask: string): Promise<number | null> {
   if (!normalizedModel.endsWith(FREE_SUFFIX)) return null;
   const baseId = normalizedModel.slice(0, -FREE_SUFFIX.length);
   if (baseId.length === 0 || baseId === normalizedModel) return null;
   return queryModelIntelligence(baseId, normalizedTask, "arena_elo");
 }
 
-export function setUserFitnessOverride(model: string, category: string, score: number): void {
+export async function setUserFitnessOverride(model: string, category: string, score: number): Promise<void> {
   try {
-    setUserFitnessOverrideEntry(model.toLowerCase(), category.toLowerCase(), score);
+    await setUserFitnessOverrideEntry(model.toLowerCase(), category.toLowerCase(), score);
     invalidateFitnessCache();
   } catch (err) {
     throw new Error(
@@ -386,9 +392,9 @@ export function setUserFitnessOverride(model: string, category: string, score: n
   }
 }
 
-export function clearUserFitnessOverride(model: string, category: string): void {
+export async function clearUserFitnessOverride(model: string, category: string): Promise<void> {
   try {
-    deleteUserFitnessOverrideEntry(model.toLowerCase(), category.toLowerCase());
+    await deleteUserFitnessOverrideEntry(model.toLowerCase(), category.toLowerCase());
     invalidateFitnessCache();
   } catch (err) {
     throw new Error(

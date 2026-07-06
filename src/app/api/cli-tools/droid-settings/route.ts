@@ -176,7 +176,7 @@ export async function POST(request: Request) {
 
     // Persist last-configured timestamp
     try {
-      saveCliToolLastConfigured("droid");
+      await saveCliToolLastConfigured("droid");
     } catch {
       /* non-critical */
     }
@@ -238,7 +238,7 @@ export async function DELETE(request: Request) {
 
     // Clear last-configured timestamp
     try {
-      deleteCliToolLastConfigured("droid");
+      await deleteCliToolLastConfigured("droid");
     } catch {
       /* non-critical */
     }

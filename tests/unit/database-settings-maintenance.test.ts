@@ -76,7 +76,7 @@ test.after(() => {
 });
 
 test("database settings route returns mapped stats and persists editable sections", async () => {
-  const current = databaseSettings.getUserDatabaseSettings();
+  const current = await databaseSettings.getUserDatabaseSettings();
   const response = await databaseSettingsRoute.PATCH(
     makeJsonRequest("PATCH", {
       retention: { ...current.retention, callLogs: 12, autoCleanupEnabled: false },
@@ -111,45 +111,51 @@ test("database settings route returns mapped stats and persists editable section
   assert.equal(getBody.aggregation.rawDataRetentionDays, 8);
 });
 
-test("database settings reader supports legacy flat keys and lets nested saves win", () => {
+test("database settings reader supports legacy flat keys and lets nested saves win", async () => {
   const db = core.getDbInstance();
   db.prepare(
     "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('databaseSettings', ?, ?)"
   ).run("callLogs", JSON.stringify(99));
 
-  assert.equal(databaseSettings.getUserDatabaseSettings().retention.callLogs, 99);
+  assert.equal((await databaseSettings.getUserDatabaseSettings()).retention.callLogs, 99);
 
-  databaseSettings.updateDatabaseSettings({
+  await databaseSettings.updateDatabaseSettings({
     retention: {
-      ...databaseSettings.getUserDatabaseSettings().retention,
+      ...(await databaseSettings.getUserDatabaseSettings()).retention,
       callLogs: 7,
     },
   });
 
-  assert.equal(databaseSettings.getUserDatabaseSettings().retention.callLogs, 7);
+  assert.equal((await databaseSettings.getUserDatabaseSettings()).retention.callLogs, 7);
 });
 
 test("database log settings mirror the runtime pipeline toggle", async () => {
   await settingsDb.updateSettings({ call_log_pipeline_enabled: false });
 
-  assert.equal(databaseSettings.getUserDatabaseSettings().logs.callLogPipelineEnabled, false);
+  assert.equal(
+    (await databaseSettings.getUserDatabaseSettings()).logs.callLogPipelineEnabled,
+    false
+  );
 
-  databaseSettings.updateDatabaseSettings({
+  await databaseSettings.updateDatabaseSettings({
     logs: {
-      ...databaseSettings.getUserDatabaseSettings().logs,
+      ...(await databaseSettings.getUserDatabaseSettings()).logs,
       callLogPipelineEnabled: true,
     },
   });
 
   const settings = await settingsDb.getSettings();
   assert.equal(settings.call_log_pipeline_enabled, true);
-  assert.equal(databaseSettings.getUserDatabaseSettings().logs.callLogPipelineEnabled, true);
+  assert.equal(
+    (await databaseSettings.getUserDatabaseSettings()).logs.callLogPipelineEnabled,
+    true
+  );
 });
 
-test("database optimization settings apply SQLite cache size immediately", () => {
-  const current = databaseSettings.getUserDatabaseSettings();
+test("database optimization settings apply SQLite cache size immediately", async () => {
+  const current = await databaseSettings.getUserDatabaseSettings();
 
-  databaseSettings.updateDatabaseSettings({
+  await databaseSettings.updateDatabaseSettings({
     optimization: {
       ...current.optimization,
       autoVacuumMode: core.getAutoVacuumMode(),
@@ -167,13 +173,13 @@ test("database optimization settings apply SQLite cache size immediately", () =>
 
   assert.equal(db.pragma("cache_size", { simple: true }), -16384);
   assert.equal(JSON.parse(stored?.value ?? "null"), 16384);
-  assert.equal(databaseSettings.getUserDatabaseSettings().optimization.cacheSize, 16384);
+  assert.equal((await databaseSettings.getUserDatabaseSettings()).optimization.cacheSize, 16384);
 });
 
-test("database optimization settings apply SQLite page size immediately", () => {
-  const current = databaseSettings.getUserDatabaseSettings();
+test("database optimization settings apply SQLite page size immediately", async () => {
+  const current = await databaseSettings.getUserDatabaseSettings();
 
-  databaseSettings.updateDatabaseSettings({
+  await databaseSettings.updateDatabaseSettings({
     optimization: {
       ...current.optimization,
       autoVacuumMode: core.getAutoVacuumMode(),
@@ -183,7 +189,7 @@ test("database optimization settings apply SQLite page size immediately", () => 
   });
 
   assert.equal(core.getDbInstance().pragma("page_size", { simple: true }), 8192);
-  assert.equal(databaseSettings.getUserDatabaseSettings().optimization.pageSize, 8192);
+  assert.equal((await databaseSettings.getUserDatabaseSettings()).optimization.pageSize, 8192);
 });
 
 test("database optimization cache size is applied when the DB is reopened", () => {
@@ -199,7 +205,7 @@ test("database optimization cache size is applied when the DB is reopened", () =
 });
 
 test("database optimization rejects negative cache size through the API", async () => {
-  const current = databaseSettings.getUserDatabaseSettings();
+  const current = await databaseSettings.getUserDatabaseSettings();
   const response = await databaseSettingsRoute.PATCH(
     makeJsonRequest("PATCH", {
       optimization: {
@@ -212,13 +218,16 @@ test("database optimization rejects negative cache size through the API", async 
   assert.equal(response.status, 400);
 });
 
-test("database settings reader normalizes legacy negative cache size to the positive default", () => {
+test("database settings reader normalizes legacy negative cache size to the positive default", async () => {
   const db = core.getDbInstance();
   db.prepare(
     "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('databaseSettings', ?, ?)"
   ).run("optimization.cacheSize", JSON.stringify(-2000));
 
-  assert.equal(databaseSettings.getUserDatabaseSettings().optimization.cacheSize, 16384);
+  assert.equal(
+    (await databaseSettings.getUserDatabaseSettings()).optimization.cacheSize,
+    16384
+  );
 });
 
 test("purgeDetailedLogs deletes request_detail_logs", async () => {
@@ -339,9 +348,9 @@ test("cleanupUsageHistory rolls up and deletes old rows using the same day bound
   const oldTimestamp = "2024-01-01T12:00:00.000Z";
   const recentTimestamp = new Date().toISOString();
 
-  databaseSettings.updateDatabaseSettings({
+  await databaseSettings.updateDatabaseSettings({
     retention: {
-      ...databaseSettings.getUserDatabaseSettings().retention,
+      ...(await databaseSettings.getUserDatabaseSettings()).retention,
       usageHistory: 30,
     },
   });

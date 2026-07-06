@@ -15,7 +15,7 @@ export async function DELETE(
   if (authError) return authError;
 
   const { id } = await params;
-  const revoked = revokeAccessToken(id);
+  const revoked = await revokeAccessToken(id);
   if (!revoked) {
     return NextResponse.json({ error: "Token not found or already revoked" }, { status: 404 });
   }

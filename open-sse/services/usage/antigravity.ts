@@ -20,7 +20,7 @@ import {
   toClientAntigravityQuotaModelId,
 } from "../../config/antigravityModelAliases.ts";
 import { isUserCallableAgyModelId } from "../../config/agyModels.ts";
-import { getDbInstance } from "@/lib/db/core";
+import { getDbClient } from "@/lib/db/core";
 import {
   applyAntigravityClientProfileHeaders,
   getAntigravityBootstrapHeaders,
@@ -114,12 +114,12 @@ const ANTIGRAVITY_LOCAL_USAGE_TOKENS_PER_UNIT = 1000;
 // source of truth in open-sse/config/antigravityModelAliases.ts (imported above), shared
 // with the provider-limits cache sanitizer. (#3821-review LEDGER-5)
 
-function getAntigravityLocalUsageUnits(
+async function getAntigravityLocalUsageUnits(
   provider: "antigravity" | "agy",
   connectionId: string | undefined,
   modelId: string,
   resetAt: string | null
-): number {
+): Promise<number> {
   if (!connectionId || !modelId || !resetAt) return 0;
 
   const resetMs = Date.parse(resetAt);
@@ -129,25 +129,20 @@ function getAntigravityLocalUsageUnits(
   const windowEnd = new Date(resetMs).toISOString();
 
   try {
-    const db = getDbInstance() as unknown as {
-      prepare: (sql: string) => { get: (...params: unknown[]) => unknown };
-    };
-    const row = db
-      .prepare(
-        `SELECT COALESCE(SUM(
-           COALESCE(tokens_input, 0) + COALESCE(tokens_output, 0) + COALESCE(tokens_reasoning, 0)
-         ), 0) AS tokens
-         FROM usage_history
-         WHERE provider = ?
-           AND connection_id = ?
-           AND model = ?
-           AND success = 1
-           AND timestamp >= ?
-           AND timestamp < ?`
-      )
-      .get(provider, connectionId, modelId, windowStart, windowEnd) as
-      | { tokens?: unknown }
-      | undefined;
+    const db = getDbClient();
+    const row = await db.get<{ tokens?: unknown }>(
+      `SELECT COALESCE(SUM(
+         COALESCE(tokens_input, 0) + COALESCE(tokens_output, 0) + COALESCE(tokens_reasoning, 0)
+       ), 0) AS tokens
+       FROM usage_history
+       WHERE provider = ?
+         AND connection_id = ?
+         AND model = ?
+         AND success = 1
+         AND timestamp >= ?
+         AND timestamp < ?`,
+      provider, connectionId, modelId, windowStart, windowEnd
+    );
 
     const tokens = Number(row?.tokens || 0);
     if (!Number.isFinite(tokens) || tokens <= 0) return 0;
@@ -157,17 +152,17 @@ function getAntigravityLocalUsageUnits(
   }
 }
 
-function applyLocalUsageFallback(
+async function applyLocalUsageFallback(
   quota: UsageQuota,
   provider: "antigravity" | "agy",
   connectionId: string | undefined,
   modelId: string
-): UsageQuota {
+): Promise<UsageQuota> {
   if (quota.quotaSource !== "fetchAvailableModels" || quota.used > 0 || quota.unlimited) {
     return quota;
   }
 
-  const localUsed = getAntigravityLocalUsageUnits(provider, connectionId, modelId, quota.resetAt);
+  const localUsed = await getAntigravityLocalUsageUnits(provider, connectionId, modelId, quota.resetAt);
   if (localUsed <= 0 || quota.total <= 0) return quota;
 
   const used = Math.min(quota.total, localUsed);
@@ -666,7 +661,7 @@ export async function getAntigravityUsage(
       const remaining = Math.round(total * remainingFraction);
       const used = isUnlimited ? 0 : Math.max(0, total - remaining);
 
-      quotas[modelKey] = applyLocalUsageFallback(
+      quotas[modelKey] = await applyLocalUsageFallback(
         {
           used,
           total: isUnlimited ? 0 : total,

@@ -34,9 +34,13 @@ import {
 } from "../usage/callLogArtifacts";
 import { migrateLegacyEncryptedString } from "./encryption";
 import { invalidateDbCache } from "./readCache";
+import { resetDbClient } from "./adapters/dbClientFactory";
 import { rowToCamel } from "./caseMapping";
 // Re-exported so existing call sites that pull these helpers off the core module keep working.
 export { toSnakeCase, toCamelCase, objToSnake, rowToCamel, cleanNulls } from "./caseMapping";
+// Async DbClient re-exports — domain modules can import from core during transition.
+export { getDbClient, resetDbClient } from "./adapters/dbClientFactory";
+export type { DbClient } from "./adapters/dbClient";
 import {
   ensureProviderConnectionsColumns,
   ensureUsageHistoryColumns,
@@ -1225,6 +1229,7 @@ export function closeDbInstance(options?: { checkpointMode?: CheckpointMode | nu
       // on the stale re-prepare path. backup.ts already does this on restore;
       // close/reset must too (found by the 6A.1 orphan-test re-wire, 2026-06-09).
       resetAllDbModuleState();
+      resetDbClient();
     }
   }
 

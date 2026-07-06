@@ -83,7 +83,7 @@ import {
   clampMcpAccessibilityConfig,
   type McpAccessibilityConfig,
 } from "../services/compression/engines/mcpAccessibility/constants.ts";
-import { getDbInstance } from "../../src/lib/db/core.ts";
+import { getDbClient } from "../../src/lib/db/core.ts";
 import { normalizeQuotaResponse } from "../../src/shared/contracts/quota.ts";
 import { resolveOmniRouteBaseUrl } from "../../src/shared/utils/resolveOmniRouteBaseUrl.ts";
 import { getMcpModelsCatalog } from "./catalog.ts";
@@ -110,11 +110,14 @@ const TOTAL_MCP_TOOL_COUNT =
 
 type JsonRecord = Record<string, unknown>;
 
-function readMcpDescriptionCompressionEnabled(): boolean {
+async function readMcpDescriptionCompressionEnabled(): Promise<boolean> {
   try {
-    const row = getDbInstance()
-      .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
-      .get("compression", "mcpDescriptionCompressionEnabled") as { value?: string } | undefined;
+    const db = getDbClient();
+    const row = await db.get<{ value?: string }>(
+      "SELECT value FROM key_value WHERE namespace = ? AND key = ?",
+      "compression",
+      "mcpDescriptionCompressionEnabled"
+    );
     if (!row?.value) return true;
     return JSON.parse(row.value) !== false;
   } catch {
@@ -122,11 +125,14 @@ function readMcpDescriptionCompressionEnabled(): boolean {
   }
 }
 
-function readMcpAccessibilityConfig(): McpAccessibilityConfig {
+async function readMcpAccessibilityConfig(): Promise<McpAccessibilityConfig> {
   try {
-    const row = getDbInstance()
-      .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
-      .get("compression", "mcpAccessibility") as { value?: string } | undefined;
+    const db = getDbClient();
+    const row = await db.get<{ value?: string }>(
+      "SELECT value FROM key_value WHERE namespace = ? AND key = ?",
+      "compression",
+      "mcpAccessibility"
+    );
     if (!row?.value) return { ...DEFAULT_MCP_ACCESSIBILITY_CONFIG };
     // clampMcpAccessibilityConfig bounds every field (and folds in the non-object guard), so a
     // persisted out-of-range maxTextChars can't make smartFilterText truncate the whole text.
@@ -607,13 +613,13 @@ async function handleWebFetch(args: {
   }
 }
 
-export function createMcpServer(): McpServer {
+export async function createMcpServer(): Promise<McpServer> {
   const server = new McpServer({
     name: "omniroute",
     version: process.env.npm_package_version || "1.8.1",
   });
-  const mcpDescriptionCompressionEnabled = readMcpDescriptionCompressionEnabled();
-  const mcpAccessibilityConfig = readMcpAccessibilityConfig();
+  const mcpDescriptionCompressionEnabled = await readMcpDescriptionCompressionEnabled();
+  const mcpAccessibilityConfig = await readMcpAccessibilityConfig();
   // F4.3 tool-cardinality: opt-in tool profile (MCP_TOOL_DENY / MCP_TOOL_ALLOW). null = no filter.
   const toolProfile = readMcpToolProfileFromEnv(process.env);
   const registerTool = server.registerTool.bind(server);
@@ -1292,7 +1298,7 @@ export function createMcpServer(): McpServer {
  * Called when `omniroute --mcp` is used.
  */
 export async function startMcpStdio(): Promise<void> {
-  const server = createMcpServer();
+  const server = await createMcpServer();
   const transport = new StdioServerTransport();
   const version = process.env.npm_package_version || "1.8.1";
   const stopHeartbeat = startMcpHeartbeat({

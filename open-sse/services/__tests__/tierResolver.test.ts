@@ -125,33 +125,33 @@ describe("TierResolver", () => {
   });
 
   describe("classifyTier - config overrides", () => {
-    it("respects provider-level tier override", () => {
-      setTierConfig({ providerOverrides: [{ provider: "openai", tier: "cheap" }] });
+    it("respects provider-level tier override", async () => {
+      await setTierConfig({ providerOverrides: [{ provider: "openai", tier: "cheap" }] });
       const result = classifyTier("openai", "gpt-4o");
       assert.equal(result.tier, PROVIDER_TIER.CHEAP);
       assert.ok(result.reason.includes("override"));
     });
 
-    it("respects model-level glob pattern override", () => {
-      setTierConfig({
+    it("respects model-level glob pattern override", async () => {
+      await setTierConfig({
         modelOverrides: [{ provider: "openai", modelPattern: "gpt-4o-mini*", tier: "cheap" }],
       });
       const result = classifyTier("openai", "gpt-4o-mini-2024-07-18");
       assert.equal(result.tier, PROVIDER_TIER.CHEAP);
     });
 
-    it("glob pattern gpt-4o-mini* matches gpt-4o-mini-2024-07-18", () => {
-      setTierConfig({
+    it("glob pattern gpt-4o-mini* matches gpt-4o-mini-2024-07-18", async () => {
+      await setTierConfig({
         modelOverrides: [{ provider: "openai", modelPattern: "gpt-4o-mini*", tier: "cheap" }],
       });
       const result = classifyTier("openai", "gpt-4o-mini-2024-07-18");
       assert.equal(result.tier, PROVIDER_TIER.CHEAP);
     });
 
-    it("config change invalidates cache", () => {
+    it("config change invalidates cache", async () => {
       const before = classifyTier("openai", "gpt-4o");
       assert.equal(before.tier, PROVIDER_TIER.PREMIUM);
-      setTierConfig({ providerOverrides: [{ provider: "openai", tier: "free" }] });
+      await setTierConfig({ providerOverrides: [{ provider: "openai", tier: "free" }] });
       const after = classifyTier("openai", "gpt-4o");
       assert.equal(after.tier, PROVIDER_TIER.FREE);
     });
@@ -176,9 +176,9 @@ describe("TierResolver", () => {
   });
 
   describe("classifyTiers - batch operation", () => {
-    it("classifies 10 targets correctly", () => {
+    it("classifies 10 targets correctly", async () => {
       clearTierCache();
-      setTierConfig({ providerOverrides: [] }); // clear any config overrides from prior tests
+      await setTierConfig({ providerOverrides: [] }); // clear any config overrides from prior tests
       const targets = [
         { provider: "kiro", model: "claude-sonnet-4.5" },
         { provider: "openai", model: "gpt-4o" },
@@ -282,9 +282,9 @@ describe("TierResolver", () => {
       assert.equal(result.tier, PROVIDER_TIER.CHEAP);
     });
 
-    it("userConfig.freeProviders is merged on top of the noAuth-derived list", () => {
+    it("userConfig.freeProviders is merged on top of the noAuth-derived list", async () => {
       // Re-merge with a new free provider (e.g. local-llama) and confirm it's added.
-      setTierConfig({ freeProviders: ["local-llama"] });
+      await setTierConfig({ freeProviders: ["local-llama"] });
       const result = classifyTier("local-llama", "anything");
       assert.equal(result.tier, PROVIDER_TIER.FREE);
       clearTierCache();

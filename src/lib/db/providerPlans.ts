@@ -9,7 +9,7 @@
  * Part of: Group B — Quota Sharing Engine (plan 22, frente F2).
  */
 
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 // ---------------------------------------------------------------------------
 // Local type shapes (aligned with src/lib/quota/dimensions.ts — merged by F7)
@@ -34,20 +34,6 @@ export interface ProviderPlan {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-interface StatementLike<TRow = unknown> {
-  all: (...params: unknown[]) => TRow[];
-  get: (...params: unknown[]) => TRow | undefined;
-  run: (...params: unknown[]) => { changes: number };
-}
-
-interface DbLike {
-  prepare: <TRow = unknown>(sql: string) => StatementLike<TRow>;
-}
-
-function getDb(): DbLike {
-  return getDbInstance() as unknown as DbLike;
-}
 
 interface PlanRow {
   connection_id: string;
@@ -81,13 +67,13 @@ function rowToPlan(row: PlanRow): ProviderPlan {
  * Get the plan for a specific provider connection, or null if not found.
  * Parses dimensions_json into a typed QuotaDimension array.
  */
-export function getPlan(connectionId: string): ProviderPlan | null {
-  const row = getDb()
-    .prepare<PlanRow>(
-      `SELECT connection_id, provider, dimensions_json, source, updated_at
-       FROM provider_plans WHERE connection_id = ?`
-    )
-    .get(connectionId);
+export async function getPlan(connectionId: string): Promise<ProviderPlan | null> {
+  const db = getDbClient();
+  const row = await db.get<PlanRow>(
+    `SELECT connection_id, provider, dimensions_json, source, updated_at
+       FROM provider_plans WHERE connection_id = ?`,
+    connectionId
+  );
   if (!row) return null;
   return rowToPlan(row);
 }
@@ -95,13 +81,12 @@ export function getPlan(connectionId: string): ProviderPlan | null {
 /**
  * List all provider plans stored in the DB.
  */
-export function listPlans(): ProviderPlan[] {
-  const rows = getDb()
-    .prepare<PlanRow>(
-      `SELECT connection_id, provider, dimensions_json, source, updated_at
+export async function listPlans(): Promise<ProviderPlan[]> {
+  const db = getDbClient();
+  const rows = await db.all<PlanRow>(
+    `SELECT connection_id, provider, dimensions_json, source, updated_at
        FROM provider_plans ORDER BY provider ASC`
-    )
-    .all();
+  );
   return rows.map(rowToPlan);
 }
 
@@ -114,36 +99,42 @@ export function listPlans(): ProviderPlan[] {
  * @param dimensions   Array of QuotaDimension objects.
  * @param source       "auto" = detected at runtime; "manual" = operator config.
  */
-export function upsertPlan(
+export async function upsertPlan(
   connectionId: string,
   provider: string,
   dimensions: QuotaDimension[],
   source: "auto" | "manual"
-): void {
+): Promise<void> {
   const now = new Date().toISOString();
   const dimensionsJson = JSON.stringify(dimensions);
+  const db = getDbClient();
 
-  getDb()
-    .prepare(
-      `INSERT INTO provider_plans (connection_id, provider, dimensions_json, source, updated_at)
+  await db.run(
+    `INSERT INTO provider_plans (connection_id, provider, dimensions_json, source, updated_at)
        VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(connection_id)
        DO UPDATE SET
          provider = excluded.provider,
          dimensions_json = excluded.dimensions_json,
          source = excluded.source,
-         updated_at = excluded.updated_at`
-    )
-    .run(connectionId, provider, dimensionsJson, source, now);
+         updated_at = excluded.updated_at`,
+    connectionId,
+    provider,
+    dimensionsJson,
+    source,
+    now
+  );
 }
 
 /**
  * Delete the plan for a connection (clears override, falls back to auto/catalog).
  * Returns true if a row was deleted, false if not found.
  */
-export function deletePlan(connectionId: string): boolean {
-  const result = getDb()
-    .prepare("DELETE FROM provider_plans WHERE connection_id = ?")
-    .run(connectionId);
-  return result.changes > 0;
+export async function deletePlan(connectionId: string): Promise<boolean> {
+  const db = getDbClient();
+  const result = await db.run(
+    "DELETE FROM provider_plans WHERE connection_id = ?",
+    connectionId
+  );
+  return (result.changes ?? 0) > 0;
 }

@@ -81,7 +81,7 @@ export async function handleCompressionStatus(
     await snapshotMcpDescriptionCompressionStats();
     const analyticsSummary = getCompressionAnalyticsSummary();
     const mcpDescriptionStats = getMcpDescriptionCompressionStats();
-    const cacheStats = getCacheStatsSummary();
+    const cacheStats = await getCacheStatsSummary();
 
     const result = {
       enabled: settings.enabled,

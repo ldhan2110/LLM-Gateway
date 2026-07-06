@@ -4,7 +4,7 @@
  */
 
 import { randomUUID } from "crypto";
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 import type { InspectorSessionRow } from "./_rowTypes";
 import { InterceptedRequestSchema } from "../../mitm/inspector/types";
 import type { InterceptedRequest } from "../../mitm/inspector/types";
@@ -35,91 +35,99 @@ function mapSessionRow(row: InspectorSessionDbRow): InspectorSessionRow {
   };
 }
 
-export function createSession(opts?: {
+export async function createSession(opts?: {
   name?: string;
   profile?: "llm" | "custom" | "all";
-}): { id: string; started_at: string } {
-  const db = getDbInstance();
+}): Promise<{ id: string; started_at: string }> {
+  const db = getDbClient();
   const id = randomUUID();
   const started_at = new Date().toISOString();
 
-  db.prepare(
-    `INSERT INTO inspector_sessions (id, name, started_at, profile) VALUES (?, ?, ?, ?)`
-  ).run(id, opts?.name ?? null, started_at, opts?.profile ?? null);
+  await db.run(
+    `INSERT INTO inspector_sessions (id, name, started_at, profile) VALUES (?, ?, ?, ?)`,
+    id,
+    opts?.name ?? null,
+    started_at,
+    opts?.profile ?? null
+  );
 
   return { id, started_at };
 }
 
-export function stopSession(id: string): void {
-  const db = getDbInstance();
+export async function stopSession(id: string): Promise<void> {
+  const db = getDbClient();
   const ended_at = new Date().toISOString();
-  db.prepare("UPDATE inspector_sessions SET ended_at = ? WHERE id = ?").run(ended_at, id);
+  await db.run("UPDATE inspector_sessions SET ended_at = ? WHERE id = ?", ended_at, id);
 }
 
-export function renameSession(id: string, name: string): void {
-  const db = getDbInstance();
-  db.prepare("UPDATE inspector_sessions SET name = ? WHERE id = ?").run(name, id);
+export async function renameSession(id: string, name: string): Promise<void> {
+  const db = getDbClient();
+  await db.run("UPDATE inspector_sessions SET name = ? WHERE id = ?", name, id);
 }
 
-export function listSessions(): InspectorSessionRow[] {
-  const db = getDbInstance();
-  const rows = db
-    .prepare("SELECT * FROM inspector_sessions ORDER BY started_at DESC")
-    .all() as InspectorSessionDbRow[];
+export async function listSessions(): Promise<InspectorSessionRow[]> {
+  const db = getDbClient();
+  const rows = await db.all<InspectorSessionDbRow>(
+    "SELECT * FROM inspector_sessions ORDER BY started_at DESC"
+  );
   return rows.map(mapSessionRow);
 }
 
-export function getSession(id: string): InspectorSessionRow | null {
-  const db = getDbInstance();
-  const row = db
-    .prepare("SELECT * FROM inspector_sessions WHERE id = ?")
-    .get(id) as InspectorSessionDbRow | undefined;
+export async function getSession(id: string): Promise<InspectorSessionRow | null> {
+  const db = getDbClient();
+  const row = await db.get<InspectorSessionDbRow>(
+    "SELECT * FROM inspector_sessions WHERE id = ?",
+    id
+  );
   return row ? mapSessionRow(row) : null;
 }
 
-export function appendSessionRequest(sessionId: string, payload: string): number {
-  const db = getDbInstance();
+export async function appendSessionRequest(sessionId: string, payload: string): Promise<number> {
+  const db = getDbClient();
   let insertedSeq = 0;
 
-  const runTransaction = db.transaction(() => {
+  await db.transaction(async (c) => {
     // Get next seq atomically within transaction
-    const seqRow = db
-      .prepare(
-        "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM inspector_session_requests WHERE session_id = ?"
-      )
-      .get(sessionId) as { next_seq: number };
+    const seqRow = await c.get<{ next_seq: number }>(
+      "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM inspector_session_requests WHERE session_id = ?",
+      sessionId
+    );
 
-    const nextSeq = seqRow.next_seq;
+    const nextSeq = seqRow!.next_seq;
 
-    db.prepare(
-      `INSERT INTO inspector_session_requests (session_id, seq, payload) VALUES (?, ?, ?)`
-    ).run(sessionId, nextSeq, payload);
+    await c.run(
+      `INSERT INTO inspector_session_requests (session_id, seq, payload) VALUES (?, ?, ?)`,
+      sessionId,
+      nextSeq,
+      payload
+    );
 
-    db.prepare(
-      "UPDATE inspector_sessions SET request_count = request_count + 1 WHERE id = ?"
-    ).run(sessionId);
+    await c.run(
+      "UPDATE inspector_sessions SET request_count = request_count + 1 WHERE id = ?",
+      sessionId
+    );
 
     insertedSeq = nextSeq;
   });
 
-  runTransaction();
   return insertedSeq;
 }
 
-export function getSessionRequests(sessionId: string): Array<{ seq: number; payload: string }> {
-  const db = getDbInstance();
-  const rows = db
-    .prepare(
-      "SELECT seq, payload FROM inspector_session_requests WHERE session_id = ? ORDER BY seq ASC"
-    )
-    .all(sessionId) as InspectorSessionRequestDbRow[];
+export async function getSessionRequests(
+  sessionId: string
+): Promise<Array<{ seq: number; payload: string }>> {
+  const db = getDbClient();
+  const rows = await db.all<InspectorSessionRequestDbRow>(
+    "SELECT seq, payload FROM inspector_session_requests WHERE session_id = ? ORDER BY seq ASC",
+    sessionId
+  );
   return rows.map((r) => ({ seq: r.seq, payload: r.payload }));
 }
 
-export function deleteSession(id: string): void {
-  const db = getDbInstance();
+export async function deleteSession(id: string): Promise<void> {
+  const db = getDbClient();
   // Cascade via FK ON DELETE CASCADE for inspector_session_requests
-  db.prepare("DELETE FROM inspector_sessions WHERE id = ?").run(id);
+  await db.run("DELETE FROM inspector_sessions WHERE id = ?", id);
 }
 
 /**
@@ -132,13 +140,13 @@ export function deleteSession(id: string): void {
  *
  * Satisfies master-plan §3.8 (F2 spec) named-export contract.
  */
-export function snapshotSession(sessionId: string): InterceptedRequest[] | null {
+export async function snapshotSession(sessionId: string): Promise<InterceptedRequest[] | null> {
   // 1. Verify session exists.
-  const session = getSession(sessionId);
+  const session = await getSession(sessionId);
   if (session === null) return null;
 
   // 2. Retrieve raw rows (already ordered by seq ASC).
-  const rawRows = getSessionRequests(sessionId);
+  const rawRows = await getSessionRequests(sessionId);
 
   // 3. Parse each payload JSON, validate via Zod schema, skip bad rows.
   const results: InterceptedRequest[] = [];

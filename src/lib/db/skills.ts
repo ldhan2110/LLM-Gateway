@@ -5,7 +5,7 @@
  * route handlers never contain raw SQL (Hard Rule #5).
  */
 
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 // ──────────────── Allowed patch columns ────────────────
 //
@@ -37,8 +37,8 @@ export interface SkillPatch {
  *
  * @returns number of rows changed (0 if skill not found, 1 if updated).
  */
-export function updateSkill(id: string, patch: SkillPatch): number {
-  const db = getDbInstance();
+export async function updateSkill(id: string, patch: SkillPatch): Promise<number> {
+  const db = getDbClient();
 
   const setClauses: string[] = [];
   const params: unknown[] = [];
@@ -57,6 +57,6 @@ export function updateSkill(id: string, patch: SkillPatch): number {
   setClauses.push("updated_at = datetime('now')");
   params.push(id);
 
-  const result = db.prepare(`UPDATE skills SET ${setClauses.join(", ")} WHERE id = ?`).run(...params);
-  return (result as { changes: number }).changes;
+  const result = await db.run(`UPDATE skills SET ${setClauses.join(", ")} WHERE id = ?`, ...params);
+  return result.changes;
 }

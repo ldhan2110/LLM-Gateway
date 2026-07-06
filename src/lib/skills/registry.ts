@@ -1,6 +1,6 @@
 import { Skill, SkillSchema } from "./types";
 import { SkillCreateInputSchema } from "./schemas";
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 import { randomUUID } from "crypto";
 import { logger } from "../../../open-sse/utils/logger.ts";
 
@@ -77,14 +77,13 @@ class SkillRegistry {
       ...parseableData
     } = skillData;
     const parsed = SkillCreateInputSchema.parse(parseableData);
-    const db = getDbInstance();
+    const db = getDbClient();
     const id = randomUUID();
     const now = new Date();
 
-    db.prepare(
+    await db.run(
       `INSERT INTO skills (id, api_key_id, name, version, description, schema, handler, enabled, mode, source_provider, tags, install_count, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       skillData.apiKeyId,
       parsed.name,
@@ -126,7 +125,7 @@ class SkillRegistry {
   }
 
   async unregister(name: string, version?: string, apiKeyId?: string): Promise<boolean> {
-    const db = getDbInstance();
+    const db = getDbClient();
 
     if (version) {
       const skill = Array.from(this.registeredSkills.values()).find(
@@ -136,16 +135,19 @@ class SkillRegistry {
           (!apiKeyId || candidate.apiKeyId === apiKeyId)
       );
       if (skill && (!apiKeyId || skill.apiKeyId === apiKeyId)) {
-        db.prepare("DELETE FROM skills WHERE id = ?").run(skill.id);
+        await db.run("DELETE FROM skills WHERE id = ?", skill.id);
         this.registeredSkills.delete(this.cacheKey(skill));
         this.rebuildVersionCache(name);
         this.invalidateCache();
         return true;
       }
     } else {
-      const deleted = db
-        .prepare("DELETE FROM skills WHERE name = ? AND (? IS NULL OR api_key_id = ?)")
-        .run(name, apiKeyId || null, apiKeyId || null);
+      const deleted = await db.run(
+        "DELETE FROM skills WHERE name = ? AND (? IS NULL OR api_key_id = ?)",
+        name,
+        apiKeyId || null,
+        apiKeyId || null
+      );
 
       if (deleted.changes > 0) {
         this.removeCachedSkills(
@@ -160,8 +162,8 @@ class SkillRegistry {
   }
 
   async unregisterById(id: string): Promise<boolean> {
-    const db = getDbInstance();
-    const deleted = db.prepare("DELETE FROM skills WHERE id = ?").run(id);
+    const db = getDbClient();
+    const deleted = await db.run("DELETE FROM skills WHERE id = ?", id);
     if (deleted.changes > 0) {
       const affectedNames = new Set<string>();
       const keysToDelete = Array.from(this.registeredSkills.entries())
@@ -303,10 +305,10 @@ class SkillRegistry {
     this.pendingLoad = (async () => {
       try {
         log.debug("skills.registry.loadFromDatabase", { cached: false });
-        const db = getDbInstance();
+        const db = getDbClient();
         const rows = apiKeyId
-          ? db.prepare("SELECT * FROM skills WHERE api_key_id = ?").all(apiKeyId)
-          : db.prepare("SELECT * FROM skills").all();
+          ? await db.all("SELECT * FROM skills WHERE api_key_id = ?", apiKeyId)
+          : await db.all("SELECT * FROM skills");
 
         if (apiKeyId) {
           this.removeCachedSkills((skill) => skill.apiKeyId === apiKeyId);
@@ -371,13 +373,16 @@ class SkillRegistry {
   }
 
   async setEnabledById(id: string, apiKeyId: string, enabled: boolean): Promise<Skill | undefined> {
-    const db = getDbInstance();
+    const db = getDbClient();
     const now = new Date();
-    const updated = db
-      .prepare(
-        "UPDATE skills SET enabled = ?, mode = ?, updated_at = ? WHERE id = ? AND api_key_id = ?"
-      )
-      .run(enabled ? 1 : 0, enabled ? "on" : "off", now.toISOString(), id, apiKeyId);
+    const updated = await db.run(
+      "UPDATE skills SET enabled = ?, mode = ?, updated_at = ? WHERE id = ? AND api_key_id = ?",
+      enabled ? 1 : 0,
+      enabled ? "on" : "off",
+      now.toISOString(),
+      id,
+      apiKeyId
+    );
 
     if (updated.changes === 0) return undefined;
 

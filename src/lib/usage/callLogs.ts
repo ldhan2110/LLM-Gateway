@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { RequestPipelinePayloads } from "@omniroute/open-sse/utils/requestLogger.ts";
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 import { collectReferencedArtifacts, selectCallLogIdsBefore } from "./callLogsBoundedQueries";
 import { getRequestDetailLogByCallLogId } from "../db/detailedLogs";
 import { shouldPersistToDisk } from "./migrations";
@@ -240,10 +240,10 @@ function buildArtifact(
   };
 }
 
-function hasTable(tableName: string): boolean {
-  const db = getDbInstance();
+async function hasTable(tableName: string): Promise<boolean> {
+  const db = getDbClient();
   return Boolean(
-    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(tableName)
+    await db.get("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", tableName)
   );
 }
 
@@ -290,9 +290,9 @@ function readLegacyLogFromDisk(entry: {
   return null;
 }
 
-function clearArtifactReference(relativePath: string, nextState: CallLogDetailState) {
-  const db = getDbInstance();
-  db.prepare(
+async function clearArtifactReference(relativePath: string, nextState: CallLogDetailState) {
+  const db = getDbClient();
+  await db.run(
     `
       UPDATE call_logs
       SET detail_state = ?,
@@ -300,11 +300,13 @@ function clearArtifactReference(relativePath: string, nextState: CallLogDetailSt
           artifact_size_bytes = NULL,
           artifact_sha256 = NULL
       WHERE artifact_relpath = ?
-    `
-  ).run(nextState, relativePath);
+    `,
+    nextState,
+    relativePath
+  );
 }
 
-function listReferencedArtifacts() {
+async function listReferencedArtifacts() {
   // #5618: paged to avoid an unbounded `.all()` OOM on large call_logs tables.
   return collectReferencedArtifacts();
 }
@@ -315,23 +317,27 @@ function listReferencedArtifacts() {
 // under the limit so each DELETE/SELECT stays valid.
 const DELETE_ID_CHUNK_SIZE = 500;
 
-function deleteCallLogRowsByIds(ids: string[]): DeleteResult {
+async function deleteCallLogRowsByIds(ids: string[]): Promise<DeleteResult> {
   if (ids.length === 0) {
     return { deletedRows: 0, deletedArtifacts: 0 };
   }
 
-  const db = getDbInstance();
+  const db = getDbClient();
   let deletedRows = 0;
   let deletedArtifacts = 0;
 
   for (let i = 0; i < ids.length; i += DELETE_ID_CHUNK_SIZE) {
     const chunk = ids.slice(i, i + DELETE_ID_CHUNK_SIZE);
     const placeholders = chunk.map(() => "?").join(", ");
-    const rows = db
-      .prepare(`SELECT artifact_relpath FROM call_logs WHERE id IN (${placeholders})`)
-      .all(...chunk) as Array<{ artifact_relpath: string | null }>;
+    const rows = await db.all<{ artifact_relpath: string | null }>(
+      `SELECT artifact_relpath FROM call_logs WHERE id IN (${placeholders})`,
+      ...chunk
+    );
 
-    const result = db.prepare(`DELETE FROM call_logs WHERE id IN (${placeholders})`).run(...chunk);
+    const result = await db.run(
+      `DELETE FROM call_logs WHERE id IN (${placeholders})`,
+      ...chunk
+    );
     deletedRows += result.changes;
     for (const row of rows) {
       if (deleteCallArtifact(row.artifact_relpath)) {
@@ -347,11 +353,11 @@ function deleteCallLogRowsByIds(ids: string[]): DeleteResult {
   };
 }
 
-export function cleanupOrphanCallLogFiles(baseDir = CALL_LOGS_DIR) {
+export async function cleanupOrphanCallLogFiles(baseDir = CALL_LOGS_DIR) {
   if (!baseDir || !fs.existsSync(baseDir)) return 0;
 
   try {
-    const referenced = listReferencedArtifacts();
+    const referenced = await listReferencedArtifacts();
     let deleted = 0;
     for (const file of listCallLogArtifactFiles(baseDir)) {
       if (referenced.has(file.relativePath)) continue;
@@ -367,7 +373,7 @@ export function cleanupOrphanCallLogFiles(baseDir = CALL_LOGS_DIR) {
   }
 }
 
-export function cleanupOverflowCallLogFiles(baseDir = CALL_LOGS_DIR, maxEntries?: number) {
+export async function cleanupOverflowCallLogFiles(baseDir = CALL_LOGS_DIR, maxEntries?: number) {
   if (!baseDir || !fs.existsSync(baseDir)) return 0;
 
   const limit = maxEntries ?? getCallLogMaxEntries();
@@ -378,7 +384,7 @@ export function cleanupOverflowCallLogFiles(baseDir = CALL_LOGS_DIR, maxEntries?
     const files = listCallLogArtifactFiles(baseDir);
     for (const file of files.slice(limit)) {
       if (deleteCallArtifact(file.relativePath)) {
-        clearArtifactReference(file.relativePath, "missing");
+        await clearArtifactReference(file.relativePath, "missing");
         deleted++;
       }
     }
@@ -393,14 +399,14 @@ export function cleanupOverflowCallLogFiles(baseDir = CALL_LOGS_DIR, maxEntries?
   }
 }
 
-export function deleteCallLogsBefore(cutoff: string): DeleteResult {
+export async function deleteCallLogsBefore(cutoff: string): Promise<DeleteResult> {
   // #5618: page the id selection so a large backlog never loads in one `.all()`.
   let deletedRows = 0;
   let deletedArtifacts = 0;
   for (;;) {
-    const ids = selectCallLogIdsBefore(cutoff);
+    const ids = await selectCallLogIdsBefore(cutoff);
     if (ids.length === 0) break;
-    const result = deleteCallLogRowsByIds(ids);
+    const result = await deleteCallLogRowsByIds(ids);
     deletedRows += result.deletedRows;
     deletedArtifacts += result.deletedArtifacts;
     if (result.deletedRows === 0) break;
@@ -408,28 +414,29 @@ export function deleteCallLogsBefore(cutoff: string): DeleteResult {
   return { deletedRows, deletedArtifacts };
 }
 
-export function trimCallLogsToMaxRows(maxRows = getCallLogsTableMaxRows()) {
+export async function trimCallLogsToMaxRows(
+  maxRows = getCallLogsTableMaxRows()
+): Promise<DeleteResult> {
   if (!Number.isInteger(maxRows) || maxRows < 1) {
     return { deletedRows: 0, deletedArtifacts: 0 };
   }
 
-  const db = getDbInstance();
+  const db = getDbClient();
   let deletedRows = 0;
   let deletedArtifacts = 0;
   const batchSize = 5000;
 
   while (true) {
-    const currentCount = db.prepare("SELECT COUNT(*) AS cnt FROM call_logs").get() as {
-      cnt: number;
-    };
-    if (currentCount.cnt <= maxRows) break;
+    const currentCount = await db.get<{ cnt: number }>("SELECT COUNT(*) AS cnt FROM call_logs");
+    if (!currentCount || currentCount.cnt <= maxRows) break;
 
     const toDelete = Math.min(currentCount.cnt - maxRows, batchSize);
-    const ids = db
-      .prepare("SELECT id FROM call_logs ORDER BY timestamp ASC LIMIT ?")
-      .all(toDelete)
-      .map((row) => String((row as { id: string }).id));
-    const result = deleteCallLogRowsByIds(ids);
+    const idRows = await db.all<{ id: string }>(
+      "SELECT id FROM call_logs ORDER BY timestamp ASC LIMIT ?",
+      toDelete
+    );
+    const ids = idRows.map((row) => String(row.id));
+    const result = await deleteCallLogRowsByIds(ids);
     deletedRows += result.deletedRows;
     deletedArtifacts += result.deletedArtifacts;
     if (result.deletedRows === 0) break;
@@ -484,8 +491,8 @@ function mapSummaryRow(row: CallLogSummaryRow) {
   };
 }
 
-function buildLegacyPipelinePayloads(id: string) {
-  const detailed = getRequestDetailLogByCallLogId(id);
+async function buildLegacyPipelinePayloads(id: string) {
+  const detailed = await getRequestDetailLogByCallLogId(id);
   if (!detailed) return null;
 
   return {
@@ -496,13 +503,14 @@ function buildLegacyPipelinePayloads(id: string) {
   };
 }
 
-function getLegacyInlineDetail(id: string) {
-  if (!hasTable("call_logs_v1_legacy")) return null;
+async function getLegacyInlineDetail(id: string) {
+  if (!(await hasTable("call_logs_v1_legacy"))) return null;
 
-  const db = getDbInstance();
-  const row = db
-    .prepare("SELECT request_body, response_body, error FROM call_logs_v1_legacy WHERE id = ?")
-    .get(id) as LegacyInlineRow | undefined;
+  const db = getDbClient();
+  const row = await db.get<LegacyInlineRow>(
+    "SELECT request_body, response_body, error FROM call_logs_v1_legacy WHERE id = ?",
+    id
+  );
   if (!row) return null;
 
   return {
@@ -599,8 +607,12 @@ export async function saveCallLog(entry: any) {
       }
     }
 
-    const db = getDbInstance();
-    db.prepare(
+    const db = getDbClient();
+    const errorSummary = toStoredErrorSummary(protectedError);
+    const hasRequestBody = protectedRequestBody !== null ? 1 : 0;
+    const hasResponseBody = protectedResponseBody !== null ? 1 : 0;
+    const hasPipelineDetails = protectedPipelinePayloads ? 1 : 0;
+    await db.run(
       `
       INSERT INTO call_logs (
         id, timestamp, method, path, status, model, requested_model, provider,
@@ -613,28 +625,53 @@ export async function saveCallLog(entry: any) {
         correlation_id
       )
       VALUES (
-        @id, @timestamp, @method, @path, @status, @model, @requestedModel, @provider,
-        @account, @connectionId, @duration, @tokensIn, @tokensOut,
-        @tokensCacheRead, @tokensCacheCreation, @tokensReasoning, @tokensCompressed,
-        @cacheSource, @requestType, @sourceFormat, @targetFormat, @apiKeyId, @apiKeyName,
-        @comboName, @comboStepId, @comboExecutionKey, @errorSummary, @detailState,
-        @artifactRelPath, @artifactSizeBytes, @artifactSha256,
-        @hasRequestBody, @hasResponseBody, @hasPipelineDetails, @requestSummary,
-        @correlationId
+        ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        ?, ?, ?,
+        ?, ?, ?, ?,
+        ?
       )
-    `
-    ).run({
-      ...logEntry,
-      errorSummary: toStoredErrorSummary(protectedError),
+    `,
+      logEntry.id,
+      logEntry.timestamp,
+      logEntry.method,
+      logEntry.path,
+      logEntry.status,
+      logEntry.model,
+      logEntry.requestedModel,
+      logEntry.provider,
+      logEntry.account,
+      logEntry.connectionId,
+      logEntry.duration,
+      logEntry.tokensIn,
+      logEntry.tokensOut,
+      logEntry.tokensCacheRead,
+      logEntry.tokensCacheCreation,
+      logEntry.tokensReasoning,
+      logEntry.tokensCompressed,
+      logEntry.cacheSource,
+      logEntry.requestType,
+      logEntry.sourceFormat,
+      logEntry.targetFormat,
+      logEntry.apiKeyId,
+      logEntry.apiKeyName,
+      logEntry.comboName,
+      logEntry.comboStepId,
+      logEntry.comboExecutionKey,
+      errorSummary,
       detailState,
       artifactRelPath,
       artifactSizeBytes,
       artifactSha256,
-      hasRequestBody: protectedRequestBody !== null ? 1 : 0,
-      hasResponseBody: protectedResponseBody !== null ? 1 : 0,
-      hasPipelineDetails: protectedPipelinePayloads ? 1 : 0,
+      hasRequestBody,
+      hasResponseBody,
+      hasPipelineDetails,
       requestSummary,
-    });
+      logEntry.correlationId
+    );
 
     scheduleCallLogRotation();
   } catch (error) {
@@ -642,17 +679,17 @@ export async function saveCallLog(entry: any) {
   }
 }
 
-export function rotateCallLogs() {
+export async function rotateCallLogs() {
   try {
     if (!CALL_LOGS_DIR || !fs.existsSync(CALL_LOGS_DIR)) return;
 
     const retentionMs = getCallLogRetentionDays() * 24 * 60 * 60 * 1000;
     const cutoff = new Date(Date.now() - retentionMs).toISOString();
 
-    deleteCallLogsBefore(cutoff);
-    trimCallLogsToMaxRows(getCallLogsTableMaxRows());
-    cleanupOverflowCallLogFiles(CALL_LOGS_DIR, getCallLogMaxEntries());
-    cleanupOrphanCallLogFiles(CALL_LOGS_DIR);
+    await deleteCallLogsBefore(cutoff);
+    await trimCallLogsToMaxRows(getCallLogsTableMaxRows());
+    await cleanupOverflowCallLogFiles(CALL_LOGS_DIR, getCallLogMaxEntries());
+    await cleanupOrphanCallLogFiles(CALL_LOGS_DIR);
   } catch (error) {
     console.error("[callLogs] Failed to rotate request artifacts:", (error as Error).message);
   }
@@ -662,13 +699,13 @@ function runScheduledCallLogRotation() {
   if (callLogRotateInFlight) return;
   callLogRotateInFlight = true;
   setImmediate(() => {
-    try {
-      rotateCallLogs();
-    } catch (error) {
-      console.error("[callLogs] Failed to rotate request artifacts:", (error as Error).message);
-    } finally {
-      callLogRotateInFlight = false;
-    }
+    rotateCallLogs()
+      .catch((error) => {
+        console.error("[callLogs] Failed to rotate request artifacts:", (error as Error).message);
+      })
+      .finally(() => {
+        callLogRotateInFlight = false;
+      });
   });
 }
 
@@ -695,7 +732,7 @@ if (shouldPersistToDisk && process.env.NODE_ENV !== "test") {
 }
 
 export async function getCallLogs(filter: any = {}) {
-  const db = getDbInstance();
+  const db = getDbClient();
   let sql = `
     SELECT cl.*,
       pn.prefix AS provider_node_prefix,
@@ -776,23 +813,22 @@ export async function getCallLogs(filter: any = {}) {
   params.__limit = limit;
   params.__offset = offset;
 
-  const rows = db.prepare(sql).all(params) as CallLogSummaryRow[];
+  const rows = await db.all<CallLogSummaryRow>(sql, params);
   return rows.map(mapSummaryRow);
 }
 
 export async function getCallLogById(id: string) {
-  const db = getDbInstance();
-  const row = db
-    .prepare(
-      `SELECT cl.*,
+  const db = getDbClient();
+  const row = await db.get<CallLogSummaryRow>(
+    `SELECT cl.*,
         pn.prefix AS provider_node_prefix,
         ${RESOLVED_ACCOUNT_SQL} AS resolved_account
        FROM call_logs cl
        LEFT JOIN provider_nodes pn ON pn.id = cl.provider
        LEFT JOIN provider_connections pc ON pc.id = cl.connection_id
-       WHERE cl.id = ?`
-    )
-    .get(id) as CallLogSummaryRow | undefined;
+       WHERE cl.id = ?`,
+    id
+  );
   if (!row) return null;
 
   const entry = mapSummaryRow(row);
@@ -808,7 +844,7 @@ export async function getCallLogById(id: string) {
         requestBody: artifactResult.artifact.requestBody ?? null,
         responseBody: artifactResult.artifact.responseBody ?? null,
         error: artifactResult.artifact.error ?? entry.error,
-        pipelinePayloads: artifactResult.artifact.pipeline ?? buildLegacyPipelinePayloads(id),
+        pipelinePayloads: artifactResult.artifact.pipeline ?? await buildLegacyPipelinePayloads(id),
         hasPipelineDetails: Boolean(artifactResult.artifact.pipeline) || entry.hasPipelineDetails,
         active: false,
       };
@@ -816,17 +852,17 @@ export async function getCallLogById(id: string) {
 
     detailState = artifactResult.state;
     if (artifactResult.state === "missing") {
-      clearArtifactReference(artifactRelPath, "missing");
+      await clearArtifactReference(artifactRelPath, "missing");
       artifactRelPath = null;
     } else {
-      db.prepare("UPDATE call_logs SET detail_state = ? WHERE id = ?").run("corrupt", id);
+      await db.run("UPDATE call_logs SET detail_state = ? WHERE id = ?", "corrupt", id);
     }
   }
 
   if (detailState === "legacy-inline") {
-    const legacyInline = getLegacyInlineDetail(id);
+    const legacyInline = await getLegacyInlineDetail(id);
     if (legacyInline) {
-      const legacyPipeline = buildLegacyPipelinePayloads(id);
+      const legacyPipeline = await buildLegacyPipelinePayloads(id);
       return {
         ...entry,
         detailState,
@@ -841,7 +877,7 @@ export async function getCallLogById(id: string) {
 
   const legacyDisk = readLegacyLogFromDisk(entry);
   if (legacyDisk) {
-    const legacyPipeline = buildLegacyPipelinePayloads(id);
+    const legacyPipeline = await buildLegacyPipelinePayloads(id);
     return {
       ...entry,
       detailState,
@@ -855,7 +891,7 @@ export async function getCallLogById(id: string) {
     };
   }
 
-  const legacyPipeline = buildLegacyPipelinePayloads(id);
+  const legacyPipeline = await buildLegacyPipelinePayloads(id);
   return {
     ...entry,
     detailState,
@@ -870,11 +906,12 @@ export async function getCallLogById(id: string) {
 }
 
 export async function exportCallLogsSince(since: string) {
-  const db = getDbInstance();
-  const ids = db
-    .prepare("SELECT id FROM call_logs WHERE timestamp >= ? ORDER BY timestamp DESC")
-    .all(since)
-    .map((row) => String((row as { id: string }).id));
+  const db = getDbClient();
+  const idRows = await db.all<{ id: string }>(
+    "SELECT id FROM call_logs WHERE timestamp >= ? ORDER BY timestamp DESC",
+    since
+  );
+  const ids = idRows.map((row) => String(row.id));
 
   const logs: unknown[] = [];
   for (const id of ids) {

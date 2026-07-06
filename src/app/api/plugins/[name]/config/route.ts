@@ -16,7 +16,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const authError = await requireManagementAuth(request);
   if (authError) return authError;
   const { name } = await params;
-  const plugin = getPluginByName(name);
+  const plugin = await getPluginByName(name);
 
   if (!plugin) {
     return NextResponse.json(buildErrorBody(404, `Plugin '${name}' not found`), {
@@ -55,7 +55,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     });
   }
 
-  const plugin = getPluginByName(name);
+  const plugin = await getPluginByName(name);
   if (!plugin) {
     return NextResponse.json(buildErrorBody(404, `Plugin '${name}' not found`), {
       status: 404,
@@ -92,7 +92,7 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
     }
   }
 
-  updatePluginConfig(name, parsed.data.config);
+  await updatePluginConfig(name, parsed.data.config);
 
   return NextResponse.json(
     { success: true, config: parsed.data.config },

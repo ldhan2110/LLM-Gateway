@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const plugins = listPlugins(statusResult.data || undefined);
+    const plugins = await listPlugins(statusResult.data || undefined);
     return NextResponse.json({ plugins: plugins.map(formatPlugin) }, { headers: CORS_HEADERS });
   } catch (err: unknown) {
     console.error("[plugins] Failed to list plugins:", err);

@@ -6,7 +6,7 @@
  */
 
 import { REGISTRY } from "../config/providerRegistry.ts";
-import { getModelContextLimit } from "../../src/lib/modelCapabilities.ts";
+import { getModelContextLimitSync as getModelContextLimit } from "../../src/lib/modelCapabilities.ts";
 
 // Default token limits per provider (fallbacks when not in registry)
 const DEFAULT_LIMITS: Record<string, number> = {

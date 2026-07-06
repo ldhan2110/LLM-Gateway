@@ -1209,7 +1209,7 @@ async function handleSingleModelChat(
         runtimeOptions.sessionId &&
         body?._omnirouteSkipContextRelay !== true
       ) {
-        const handoff = getHandoff(runtimeOptions.sessionId, comboName);
+        const handoff = await getHandoff(runtimeOptions.sessionId, comboName);
         if (handoff && handoff.fromAccount !== credentials.connectionId) {
           // Inject only after a real account switch. The combo loop itself cannot
           // reliably detect this because account selection happens inside auth.
@@ -1319,7 +1319,7 @@ async function handleSingleModelChat(
           breaker._onSuccess();
         }
         if (injectedHandoff && runtimeOptions.sessionId && comboName) {
-          deleteHandoff(runtimeOptions.sessionId, comboName);
+          await deleteHandoff(runtimeOptions.sessionId, comboName);
         }
         if (telemetry) telemetry.startPhase("finalize");
         if (telemetry) telemetry.endPhase();

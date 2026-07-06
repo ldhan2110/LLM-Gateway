@@ -3,7 +3,7 @@
  * CRUD operations for inspector_custom_hosts table.
  */
 
-import { getDbInstance } from "./core.ts";
+import { getDbClient } from "./core";
 import type { InspectorCustomHostRow } from "./_rowTypes.ts";
 
 // SQLite stores booleans as integers
@@ -27,51 +27,51 @@ function mapRow(row: InspectorCustomHostDbRow): InspectorCustomHostRow {
   };
 }
 
-export function listCustomHosts(opts?: { enabledOnly?: boolean }): InspectorCustomHostRow[] {
-  const db = getDbInstance();
+export async function listCustomHosts(opts?: { enabledOnly?: boolean }): Promise<InspectorCustomHostRow[]> {
+  const db = getDbClient();
   const enabledOnly = opts?.enabledOnly === true;
 
   const rows = enabledOnly
-    ? (db
-        .prepare("SELECT * FROM inspector_custom_hosts WHERE enabled = 1 ORDER BY host ASC")
-        .all() as InspectorCustomHostDbRow[])
-    : (db
-        .prepare("SELECT * FROM inspector_custom_hosts ORDER BY host ASC")
-        .all() as InspectorCustomHostDbRow[]);
+    ? await db.all<InspectorCustomHostDbRow>("SELECT * FROM inspector_custom_hosts WHERE enabled = 1 ORDER BY host ASC")
+    : await db.all<InspectorCustomHostDbRow>("SELECT * FROM inspector_custom_hosts ORDER BY host ASC");
 
   return rows.map(mapRow);
 }
 
-export function addCustomHost(
+export async function addCustomHost(
   host: string,
   kind: "llm" | "app" | "custom" = "custom",
   label?: string
-): void {
-  const db = getDbInstance();
+): Promise<void> {
+  const db = getDbClient();
   const now = new Date().toISOString();
-  db.prepare(
+  await db.run(
     `INSERT OR IGNORE INTO inspector_custom_hosts (host, enabled, label, kind, added_at)
-     VALUES (?, 1, ?, ?, ?)`
-  ).run(host, label ?? null, kind, now);
-}
-
-export function removeCustomHost(host: string): void {
-  const db = getDbInstance();
-  db.prepare("DELETE FROM inspector_custom_hosts WHERE host = ?").run(host);
-}
-
-export function toggleCustomHost(host: string, enabled: boolean): void {
-  const db = getDbInstance();
-  db.prepare("UPDATE inspector_custom_hosts SET enabled = ? WHERE host = ?").run(
-    enabled ? 1 : 0,
-    host
+     VALUES (?, 1, ?, ?, ?)`,
+    host, label ?? null, kind, now
   );
 }
 
-export function touchLastSeen(host: string): void {
-  const db = getDbInstance();
+export async function removeCustomHost(host: string): Promise<void> {
+  const db = getDbClient();
+  await db.run("DELETE FROM inspector_custom_hosts WHERE host = ?", host);
+}
+
+export async function toggleCustomHost(host: string, enabled: boolean): Promise<void> {
+  const db = getDbClient();
+  await db.run(
+    "UPDATE inspector_custom_hosts SET enabled = ? WHERE host = ?",
+    enabled ? 1 : 0, host
+  );
+}
+
+export async function touchLastSeen(host: string): Promise<void> {
+  const db = getDbClient();
   const now = new Date().toISOString();
-  db.prepare("UPDATE inspector_custom_hosts SET last_seen_at = ? WHERE host = ?").run(now, host);
+  await db.run(
+    "UPDATE inspector_custom_hosts SET last_seen_at = ? WHERE host = ?",
+    now, host
+  );
 }
 
 /**
@@ -79,10 +79,11 @@ export function touchLastSeen(host: string): void {
  * Used by agentBridgeHook to distinguish custom-host intercepts from agent-bridge
  * intercepts so that Mode 2 (Custom Hosts) entries appear in the "Custom" profile.
  */
-export function isCustomHost(host: string): boolean {
-  const db = getDbInstance();
-  const row = db
-    .prepare("SELECT 1 AS found FROM inspector_custom_hosts WHERE host = ? AND enabled = 1")
-    .get(host) as { found: number } | undefined;
+export async function isCustomHost(host: string): Promise<boolean> {
+  const db = getDbClient();
+  const row = await db.get<{ found: number }>(
+    "SELECT 1 AS found FROM inspector_custom_hosts WHERE host = ? AND enabled = 1",
+    host
+  );
   return row !== undefined;
 }

@@ -1,4 +1,4 @@
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 export type ComboForecastUsageRow = {
   comboName: string;
@@ -48,28 +48,27 @@ function toString(value: unknown, fallback = "unknown"): string {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : fallback;
 }
 
-export function getComboForecastUsageRows(opts: {
+export async function getComboForecastUsageRows(opts: {
   since: string;
   until?: string;
   comboName?: string;
-}): ComboForecastUsageRow[] {
-  const db = getDbInstance();
-  const conditions = ["combo_name IS NOT NULL", "combo_name != ''", "timestamp >= @since"];
-  const params: Record<string, unknown> = { since: opts.since };
+}): Promise<ComboForecastUsageRow[]> {
+  const db = getDbClient();
+  const conditions = ["combo_name IS NOT NULL", "combo_name != ''", "timestamp >= ?"];
+  const params: unknown[] = [opts.since];
 
   if (opts.until) {
-    conditions.push("timestamp <= @until");
-    params.until = opts.until;
+    conditions.push("timestamp <= ?");
+    params.push(opts.until);
   }
 
   if (opts.comboName) {
-    conditions.push("combo_name = @comboName");
-    params.comboName = opts.comboName;
+    conditions.push("combo_name = ?");
+    params.push(opts.comboName);
   }
 
-  const rows = db
-    .prepare(
-      `SELECT
+  const rows = await db.all<ComboForecastUsageSqlRow>(
+    `SELECT
          combo_name as comboName,
          COALESCE(NULLIF(combo_execution_key, ''), NULLIF(combo_step_id, '')) as executionKey,
          combo_step_id as stepId,
@@ -90,9 +89,9 @@ export function getComboForecastUsageRows(opts: {
        FROM call_logs
        WHERE ${conditions.join(" AND ")}
        GROUP BY combo_name, executionKey, combo_step_id, provider, model, requested_model, connection_id
-       ORDER BY combo_name ASC, requests DESC`
-    )
-    .all(params) as ComboForecastUsageSqlRow[];
+       ORDER BY combo_name ASC, requests DESC`,
+    ...params
+  );
 
   return rows.map((row) => ({
     comboName: toString(row.comboName),

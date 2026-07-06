@@ -163,7 +163,7 @@ test("context-relay universal handoff: fires and writes handoff record on model 
 
   // Seed the prior model usage so getLastSessionModel returns PREV_MODEL.
   // universalHandoffConfig.enabled = true by DEFAULT_UNIVERSAL_HANDOFF_CONFIG.
-  recordSessionModelUsage(SESSION_ID, COMBO_NAME, PREV_MODEL, "gemini", undefined);
+  await recordSessionModelUsage(SESSION_ID, COMBO_NAME, PREV_MODEL, "gemini", undefined);
 
   installHandoffAwareFetch();
 
@@ -227,7 +227,7 @@ test("context-relay universal handoff: does NOT fire when no prior model is reco
   // Give setImmediate time to fire if the bug were present.
   await new Promise((res) => setTimeout(res, 250));
 
-  const handoff = getHandoff(SESSION_ID, COMBO_NAME);
+  const handoff = await getHandoff(SESSION_ID, COMBO_NAME);
   assert.equal(
     handoff,
     null,
@@ -257,7 +257,7 @@ test("context-relay universal handoff: does NOT fire when x-omniroute-session-id
   });
 
   // Seed prior model — but without the header the session block won't fire.
-  recordSessionModelUsage(SESSION_ID, COMBO_NAME, PREV_MODEL, "gemini", undefined);
+  await recordSessionModelUsage(SESSION_ID, COMBO_NAME, PREV_MODEL, "gemini", undefined);
 
   installHandoffAwareFetch();
 
@@ -267,7 +267,7 @@ test("context-relay universal handoff: does NOT fire when x-omniroute-session-id
 
   await new Promise((res) => setTimeout(res, 250));
 
-  const handoff = getHandoff(SESSION_ID, COMBO_NAME);
+  const handoff = await getHandoff(SESSION_ID, COMBO_NAME);
   assert.equal(
     handoff,
     null,

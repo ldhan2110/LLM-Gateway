@@ -115,7 +115,7 @@ export async function bootstrapEmbeddedServices(): Promise<void> {
         scheduleServiceModelSync(cfg.tool, baseUrl, apiKey);
       } else if (status.state === "stopped" || status.state === "error") {
         stopServiceModelSync(cfg.tool);
-        markAllUnavailable(cfg.tool);
+        markAllUnavailable(cfg.tool).catch(() => {});
       }
     });
 

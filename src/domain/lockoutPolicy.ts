@@ -43,15 +43,16 @@ function getState(identifier) {
     return lockoutCache.get(identifier);
   }
 
-  try {
-    const fromDb = loadLockoutState(identifier);
-    if (fromDb) {
-      lockoutCache.set(identifier, fromDb);
-      return fromDb;
-    }
-  } catch {
-    // DB may not be ready
-  }
+  // Kick off async load into cache; callers fall back to null if not yet loaded
+  loadLockoutState(identifier)
+    .then((fromDb) => {
+      if (fromDb && !lockoutCache.has(identifier)) {
+        lockoutCache.set(identifier, fromDb);
+      }
+    })
+    .catch(() => {
+      // DB may not be ready
+    });
 
   return null;
 }
@@ -63,11 +64,9 @@ function getState(identifier) {
  */
 function persistState(identifier, state) {
   lockoutCache.set(identifier, state);
-  try {
-    saveLockoutState(identifier, state);
-  } catch {
+  saveLockoutState(identifier, state).catch(() => {
     // Non-critical
-  }
+  });
 }
 
 /**
@@ -149,11 +148,9 @@ export function recordFailedAttempt(identifier, config = DEFAULT_CONFIG) {
  */
 export function recordSuccess(identifier) {
   lockoutCache.delete(identifier);
-  try {
-    deleteLockoutState(identifier);
-  } catch {
+  deleteLockoutState(identifier).catch(() => {
     // Non-critical
-  }
+  });
 }
 
 /**
@@ -163,11 +160,9 @@ export function recordSuccess(identifier) {
  */
 export function forceUnlock(identifier) {
   lockoutCache.delete(identifier);
-  try {
-    deleteLockoutState(identifier);
-  } catch {
+  deleteLockoutState(identifier).catch(() => {
     // Non-critical
-  }
+  });
 }
 
 /**
@@ -178,20 +173,21 @@ export function forceUnlock(identifier) {
 export function getLockedIdentifiers() {
   const now = Date.now();
 
-  // Merge cache and DB
-  try {
-    const fromDb = loadAllLockedIdentifiers();
-    for (const entry of fromDb) {
-      if (!lockoutCache.has(entry.identifier)) {
-        lockoutCache.set(entry.identifier, {
-          attempts: [],
-          lockedUntil: entry.lockedUntil,
-        });
+  // Merge cache and DB (fire-and-forget; use cache for synchronous return)
+  loadAllLockedIdentifiers()
+    .then((fromDb) => {
+      for (const entry of fromDb) {
+        if (!lockoutCache.has(entry.identifier)) {
+          lockoutCache.set(entry.identifier, {
+            attempts: [],
+            lockedUntil: entry.lockedUntil,
+          });
+        }
       }
-    }
-  } catch {
-    // Use cache only
-  }
+    })
+    .catch(() => {
+      // Use cache only
+    });
 
   const locked = [];
   for (const [id, state] of lockoutCache.entries()) {

@@ -58,7 +58,7 @@ test("markAccountUnavailable does not shorten an existing numeric-epoch cooldown
   // Simulate the Antigravity full-quota path: a long (1h) cooldown persisted as
   // a raw epoch number (the known write-side trap from #3954).
   const longCooldownUntil = Date.now() + HOUR;
-  providersDb.setConnectionRateLimitUntil(connId, longCooldownUntil);
+  await providersDb.setConnectionRateLimitUntil(connId, longCooldownUntil);
 
   const before = readConnectionRow(connId);
   assert.ok(

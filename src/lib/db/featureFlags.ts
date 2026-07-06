@@ -7,18 +7,19 @@
  */
 
 import { FEATURE_FLAG_DEFINITIONS } from "@/shared/constants/featureFlagDefinitions";
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 const NAMESPACE = "feature_flags";
 
 /**
  * Returns all feature flag overrides as a key→value map.
  */
-export function getFeatureFlagOverrides(): Record<string, string> {
-  const db = getDbInstance();
-  const rows = db
-    .prepare("SELECT key, value FROM key_value WHERE namespace = ?")
-    .all(NAMESPACE) as Array<{ key: string; value: string }>;
+export async function getFeatureFlagOverrides(): Promise<Record<string, string>> {
+  const db = getDbClient();
+  const rows = await db.all<{ key: string; value: string }>(
+    "SELECT key, value FROM key_value WHERE namespace = ?",
+    NAMESPACE
+  );
 
   const result: Record<string, string> = {};
   for (const row of rows) {
@@ -31,18 +32,20 @@ export function getFeatureFlagOverrides(): Record<string, string> {
  * Returns the override value for a single flag, or undefined if no override
  * is stored.
  */
-export function getFeatureFlagOverride(key: string): string | undefined {
-  const db = getDbInstance();
-  const row = db
-    .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
-    .get(NAMESPACE, key) as { value: string } | undefined;
+export async function getFeatureFlagOverride(key: string): Promise<string | undefined> {
+  const db = getDbClient();
+  const row = await db.get<{ value: string }>(
+    "SELECT value FROM key_value WHERE namespace = ? AND key = ?",
+    NAMESPACE,
+    key
+  );
   return row?.value;
 }
 
 /**
  * Persists (or replaces) an override for a single flag.
  */
-export function setFeatureFlagOverride(key: string, value: string): void {
+export async function setFeatureFlagOverride(key: string, value: string): Promise<void> {
   const definition = FEATURE_FLAG_DEFINITIONS.find((d) => d.key === key);
   if (!definition) {
     throw new Error(`Unknown feature flag key: ${key}`);
@@ -56,8 +59,9 @@ export function setFeatureFlagOverride(key: string, value: string): void {
       `Invalid value "${value}" for enum flag ${key}. Allowed: ${definition.enumValues.join(", ")}`
     );
   }
-  const db = getDbInstance();
-  db.prepare("INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)").run(
+  const db = getDbClient();
+  await db.run(
+    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)",
     NAMESPACE,
     key,
     value
@@ -68,15 +72,15 @@ export function setFeatureFlagOverride(key: string, value: string): void {
  * Removes the override for a single flag, restoring env-var / default
  * behaviour.
  */
-export function removeFeatureFlagOverride(key: string): void {
-  const db = getDbInstance();
-  db.prepare("DELETE FROM key_value WHERE namespace = ? AND key = ?").run(NAMESPACE, key);
+export async function removeFeatureFlagOverride(key: string): Promise<void> {
+  const db = getDbClient();
+  await db.run("DELETE FROM key_value WHERE namespace = ? AND key = ?", NAMESPACE, key);
 }
 
 /**
  * Removes all stored feature flag overrides.
  */
-export function clearAllFeatureFlagOverrides(): void {
-  const db = getDbInstance();
-  db.prepare("DELETE FROM key_value WHERE namespace = ?").run(NAMESPACE);
+export async function clearAllFeatureFlagOverrides(): Promise<void> {
+  const db = getDbClient();
+  await db.run("DELETE FROM key_value WHERE namespace = ?", NAMESPACE);
 }

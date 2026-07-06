@@ -1,6 +1,6 @@
 /** Version manager tool state persistence. */
 
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 interface VersionManagerRow {
   id?: unknown;
@@ -162,16 +162,17 @@ function rowToVersionManager(row: VersionManagerRow): VersionManagerTool {
 }
 
 export async function getVersionManagerStatus(): Promise<VersionManagerTool[]> {
-  const db = getDbInstance();
-  const rows = db.prepare("SELECT * FROM version_manager").all() as VersionManagerRow[];
+  const db = getDbClient();
+  const rows = await db.all<VersionManagerRow>("SELECT * FROM version_manager");
   return rows.map(rowToVersionManager);
 }
 
 export async function getVersionManagerTool(tool: string): Promise<VersionManagerTool | null> {
-  const db = getDbInstance();
-  const row = db.prepare("SELECT * FROM version_manager WHERE tool = ?").get(tool) as
-    | VersionManagerRow
-    | undefined;
+  const db = getDbClient();
+  const row = await db.get<VersionManagerRow>(
+    "SELECT * FROM version_manager WHERE tool = ?",
+    tool
+  );
   if (!row) return null;
   return rowToVersionManager(row);
 }
@@ -193,8 +194,8 @@ export async function upsertVersionManagerTool(data: {
   configOverrides?: Record<string, unknown> | null;
   errorMessage?: string | null;
 }): Promise<VersionManagerTool> {
-  const db = getDbInstance();
-  db.prepare(
+  const db = getDbClient();
+  await db.run(
     `
     INSERT INTO version_manager (
       tool, current_version, installed_version, pinned_version, binary_path,
@@ -217,8 +218,7 @@ export async function upsertVersionManagerTool(data: {
       config_overrides = excluded.config_overrides,
       error_message = excluded.error_message,
       updated_at = datetime('now')
-  `
-  ).run(
+  `,
     data.tool,
     data.currentVersion ?? null,
     data.installedVersion ?? null,
@@ -244,7 +244,7 @@ export async function updateVersionManagerTool(
   tool: string,
   updates: Record<string, unknown>
 ): Promise<VersionManagerTool | null> {
-  const db = getDbInstance();
+  const db = getDbClient();
   const existing = await getVersionManagerTool(tool);
   if (!existing) return null;
 
@@ -269,43 +269,47 @@ export async function updateVersionManagerTool(
   ]);
 
   const sets: string[] = ["updated_at = datetime('now')"];
-  const params: Record<string, unknown> = { tool };
+  const params: unknown[] = [];
 
   for (const [key, value] of Object.entries(updates)) {
     if (!ALLOWED_COLUMNS.has(key)) continue;
     const dbKey = key.replace(/([A-Z])/g, "_$1").toLowerCase();
 
     if (key === "configOverrides") {
-      sets.push("config_overrides = @configOverrides");
-      params.configOverrides = stringifyConfigOverrides(value as Record<string, unknown> | null);
+      sets.push("config_overrides = ?");
+      params.push(stringifyConfigOverrides(value as Record<string, unknown> | null));
     } else if (key === "autoUpdate" || key === "autoStart" || key === "providerExpose") {
-      sets.push(`${dbKey} = @${key}`);
-      params[key] = value === true ? 1 : 0;
+      sets.push(`${dbKey} = ?`);
+      params.push(value === true ? 1 : 0);
     } else if (value === null) {
       sets.push(`${dbKey} = null`);
     } else {
-      sets.push(`${dbKey} = @${key}`);
-      params[key] = value;
+      sets.push(`${dbKey} = ?`);
+      params.push(value);
     }
   }
 
-  db.prepare(`UPDATE version_manager SET ${sets.join(", ")} WHERE tool = @tool`).run(params);
+  params.push(tool);
+  await db.run(
+    `UPDATE version_manager SET ${sets.join(", ")} WHERE tool = ?`,
+    ...params
+  );
   return getVersionManagerTool(tool);
 }
 
 export async function deleteVersionManagerTool(tool: string): Promise<boolean> {
-  const db = getDbInstance();
-  const result = db.prepare("DELETE FROM version_manager WHERE tool = ?").run(tool);
+  const db = getDbClient();
+  const result = await db.run("DELETE FROM version_manager WHERE tool = ?", tool);
   return result.changes > 0;
 }
 
 export async function updateToolHealth(tool: string, healthStatus: string): Promise<boolean> {
-  const db = getDbInstance();
-  const result = db
-    .prepare(
-      "UPDATE version_manager SET health_status = ?, last_health_check = datetime('now') WHERE tool = ?"
-    )
-    .run(healthStatus, tool);
+  const db = getDbClient();
+  const result = await db.run(
+    "UPDATE version_manager SET health_status = ?, last_health_check = datetime('now') WHERE tool = ?",
+    healthStatus,
+    tool
+  );
   return result.changes > 0;
 }
 
@@ -314,10 +318,12 @@ export async function updateToolVersion(
   field: "current_version" | "installed_version",
   version: string
 ): Promise<boolean> {
-  const db = getDbInstance();
-  const result = db
-    .prepare(`UPDATE version_manager SET ${field} = ?, updated_at = datetime('now') WHERE tool = ?`)
-    .run(version, tool);
+  const db = getDbClient();
+  const result = await db.run(
+    `UPDATE version_manager SET ${field} = ?, updated_at = datetime('now') WHERE tool = ?`,
+    version,
+    tool
+  );
   return result.changes > 0;
 }
 
@@ -327,18 +333,22 @@ export async function setToolStatus(
   pid?: number,
   errorMessage?: string
 ): Promise<boolean> {
-  const db = getDbInstance();
-  const result = db
-    .prepare(
-      pid !== undefined
-        ? "UPDATE version_manager SET status = ?, pid = ?, error_message = ?, updated_at = datetime('now') WHERE tool = ?"
-        : "UPDATE version_manager SET status = ?, error_message = ?, updated_at = datetime('now') WHERE tool = ?"
-    )
-    .run(
-      ...(pid !== undefined
-        ? [status, pid, errorMessage ?? null, tool]
-        : [status, errorMessage ?? null, tool])
-    );
+  const db = getDbClient();
+  const result =
+    pid !== undefined
+      ? await db.run(
+          "UPDATE version_manager SET status = ?, pid = ?, error_message = ?, updated_at = datetime('now') WHERE tool = ?",
+          status,
+          pid,
+          errorMessage ?? null,
+          tool
+        )
+      : await db.run(
+          "UPDATE version_manager SET status = ?, error_message = ?, updated_at = datetime('now') WHERE tool = ?",
+          status,
+          errorMessage ?? null,
+          tool
+        );
   return result.changes > 0;
 }
 

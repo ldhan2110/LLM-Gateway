@@ -244,7 +244,7 @@ export const managementPolicy: RoutePolicy = {
     // because `oma_` tokens are management credentials, not inference API keys.
     // Shared with `requireManagementAuth` (no drift). Scope enforced per the
     // method+admin-allowlist policy (inferRequiredScope).
-    const accessVerdict = evaluateAccessTokenAuth(ctx.request as unknown as Request);
+    const accessVerdict = await evaluateAccessTokenAuth(ctx.request as unknown as Request);
     switch (accessVerdict.kind) {
       case "ok":
         return allow({

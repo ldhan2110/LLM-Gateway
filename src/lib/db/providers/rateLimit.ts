@@ -2,18 +2,8 @@
  * db/providers/rateLimit.ts — Rate-limit/quota runtime helpers for provider_connections.
  */
 
-import { getDbInstance } from "../core";
+import { getDbClient } from "../core";
 import { invalidateDbCache } from "../readCache";
-
-interface StatementLike<TRow = unknown> {
-  all: (...params: unknown[]) => TRow[];
-  get: (...params: unknown[]) => TRow | undefined;
-  run: (...params: unknown[]) => { changes?: number };
-}
-
-interface DbLike {
-  prepare: <TRow = unknown>(sql: string) => StatementLike<TRow>;
-}
 
 // ──────────────── T05: Rate-Limit DB Persistence ──────────────────────────
 // Allows rate-limit state to survive token refresh without being accidentally
@@ -27,11 +17,17 @@ interface DbLike {
  * @param connectionId - The provider_connections.id
  * @param until - Epoch ms when the rate limit expires (null to clear)
  */
-export function setConnectionRateLimitUntil(connectionId: string, until: number | null): void {
-  const db = getDbInstance() as unknown as DbLike;
-  db.prepare(
-    "UPDATE provider_connections SET rate_limited_until = ?, updated_at = ? WHERE id = ?"
-  ).run(until, new Date().toISOString(), connectionId);
+export async function setConnectionRateLimitUntil(
+  connectionId: string,
+  until: number | null
+): Promise<void> {
+  const db = getDbClient();
+  await db.run(
+    "UPDATE provider_connections SET rate_limited_until = ?, updated_at = ? WHERE id = ?",
+    until,
+    new Date().toISOString(),
+    connectionId
+  );
   invalidateDbCache("connections");
 }
 
@@ -43,11 +39,14 @@ export function setConnectionRateLimitUntil(connectionId: string, until: number 
  * the timestamp is always strictly in the future at the moment of write. See Issue #1
  * (per-account 429 cascade not persisting).
  */
-export function markConnectionRateLimitedUntil(connectionId: string, retryAfterMs: number): void {
+export async function markConnectionRateLimitedUntil(
+  connectionId: string,
+  retryAfterMs: number
+): Promise<void> {
   if (typeof connectionId !== "string" || connectionId.length === 0) return;
   if (!Number.isFinite(retryAfterMs) || retryAfterMs <= 0) return;
   try {
-    setConnectionRateLimitUntil(connectionId, Date.now() + retryAfterMs);
+    await setConnectionRateLimitUntil(connectionId, Date.now() + retryAfterMs);
   } catch {
     // best-effort
   }
@@ -59,10 +58,10 @@ export function markConnectionRateLimitedUntil(connectionId: string, retryAfterM
  * Best-effort: never throws. Mirrors `resetAccountState`'s in-memory clear so the
  * in-memory AccountState and the DB row agree.
  */
-export function clearConnectionRateLimit(connectionId: string): void {
+export async function clearConnectionRateLimit(connectionId: string): Promise<void> {
   if (typeof connectionId !== "string" || connectionId.length === 0) return;
   try {
-    setConnectionRateLimitUntil(connectionId, null);
+    await setConnectionRateLimitUntil(connectionId, null);
   } catch {
     // best-effort
   }
@@ -74,11 +73,12 @@ export function clearConnectionRateLimit(connectionId: string): void {
  *
  * @returns true if rate_limited_until is set and in the future
  */
-export function isConnectionRateLimited(connectionId: string): boolean {
-  const db = getDbInstance() as unknown as DbLike;
-  const row = db
-    .prepare("SELECT rate_limited_until FROM provider_connections WHERE id = ?")
-    .get(connectionId) as { rate_limited_until?: number | null } | undefined;
+export async function isConnectionRateLimited(connectionId: string): Promise<boolean> {
+  const db = getDbClient();
+  const row = await db.get<{ rate_limited_until?: number | null }>(
+    "SELECT rate_limited_until FROM provider_connections WHERE id = ?",
+    connectionId
+  );
   if (!row?.rate_limited_until) return false;
   return Date.now() < row.rate_limited_until;
 }
@@ -87,16 +87,16 @@ export function isConnectionRateLimited(connectionId: string): boolean {
  * T05: Get all connections for a provider that are currently rate-limited.
  * Returns an array of { id, rateLimitedUntil } for dashboard display.
  */
-export function getRateLimitedConnections(
+export async function getRateLimitedConnections(
   provider: string
-): Array<{ id: string; rateLimitedUntil: number }> {
-  const db = getDbInstance() as unknown as DbLike;
+): Promise<Array<{ id: string; rateLimitedUntil: number }>> {
+  const db = getDbClient();
   const now = Date.now();
-  const rows = db
-    .prepare(
-      "SELECT id, rate_limited_until FROM provider_connections WHERE provider = ? AND rate_limited_until > ?"
-    )
-    .all(provider, now) as Array<{ id: string; rate_limited_until: number }>;
+  const rows = await db.all<{ id: string; rate_limited_until: number }>(
+    "SELECT id, rate_limited_until FROM provider_connections WHERE provider = ? AND rate_limited_until > ?",
+    provider,
+    now
+  );
   return rows.map((r) => ({ id: r.id, rateLimitedUntil: r.rate_limited_until }));
 }
 
@@ -145,8 +145,8 @@ export function getEffectiveQuotaUsage(
  * Must be called once, early in the startup sequence, before any request
  * is handled.  Returns the number of connections that were cleared.
  */
-export function clearStaleCrashCooldowns(): { cleared: number } {
-  const db = getDbInstance() as unknown as DbLike;
+export async function clearStaleCrashCooldowns(): Promise<{ cleared: number }> {
+  const db = getDbClient();
   const now = new Date().toISOString();
 
   // Fetch all connections that have a rate_limited_until set and are NOT in
@@ -154,11 +154,9 @@ export function clearStaleCrashCooldowns(): { cleared: number } {
   // canonical `TERMINAL_STATUSES` set rather than duplicating the list in SQL.
   const TERMINAL_STATUSES = new Set(["banned", "expired", "credits_exhausted"]);
 
-  const rows = db
-    .prepare(
-      `SELECT id, test_status FROM provider_connections WHERE rate_limited_until IS NOT NULL`
-    )
-    .all() as Array<{ id: string; test_status: string | null }>;
+  const rows = await db.all<{ id: string; test_status: string | null }>(
+    `SELECT id, test_status FROM provider_connections WHERE rate_limited_until IS NOT NULL`
+  );
 
   const toReset = rows.filter((r) => {
     const status = (r.test_status || "").trim().toLowerCase();
@@ -167,8 +165,7 @@ export function clearStaleCrashCooldowns(): { cleared: number } {
 
   if (toReset.length === 0) return { cleared: 0 };
 
-  const stmt = db.prepare(
-    `UPDATE provider_connections SET
+  const resetSql = `UPDATE provider_connections SET
        rate_limited_until = NULL,
        test_status        = 'active',
        backoff_level      = 0,
@@ -178,11 +175,10 @@ export function clearStaleCrashCooldowns(): { cleared: number } {
        last_error_source  = NULL,
        error_code         = NULL,
        updated_at         = ?
-     WHERE id = ?`
-  );
+     WHERE id = ?`;
 
   for (const row of toReset) {
-    stmt.run(now, row.id);
+    await db.run(resetSql, now, row.id);
   }
 
   invalidateDbCache("connections");

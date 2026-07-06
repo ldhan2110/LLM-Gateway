@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { getDbInstance, rowToCamel } from "./core";
+import { getDbClient, rowToCamel } from "./core";
 import { backupDbFile } from "./backup";
 
 type JsonRecord = Record<string, unknown>;
@@ -13,17 +13,6 @@ export interface SyncTokenRecord {
   lastUsedAt: string | null;
   createdAt: string;
   updatedAt: string;
-}
-
-interface StatementLike<TRow = unknown> {
-  all: (...params: unknown[]) => TRow[];
-  get: (...params: unknown[]) => TRow | undefined;
-  run: (...params: unknown[]) => { changes?: number };
-}
-
-interface DbLike {
-  prepare: <TRow = unknown>(sql: string) => StatementLike<TRow>;
-  exec: (sql: string) => void;
 }
 
 function asRecord(value: unknown): JsonRecord {
@@ -48,8 +37,9 @@ function toSyncTokenRecord(value: unknown): SyncTokenRecord | null {
   };
 }
 
-function ensureSyncTokensTable(db: DbLike) {
-  db.exec(`
+async function ensureSyncTokensTable() {
+  const db = getDbClient();
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS sync_tokens (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -69,13 +59,11 @@ function ensureSyncTokensTable(db: DbLike) {
 }
 
 export async function listSyncTokens() {
-  const db = getDbInstance() as unknown as DbLike;
-  ensureSyncTokensTable(db);
-  const rows = db
-    .prepare(
-      "SELECT * FROM sync_tokens ORDER BY datetime(created_at) DESC, name COLLATE NOCASE ASC"
-    )
-    .all();
+  await ensureSyncTokensTable();
+  const db = getDbClient();
+  const rows = await db.all(
+    "SELECT * FROM sync_tokens ORDER BY datetime(created_at) DESC, name COLLATE NOCASE ASC"
+  );
 
   return rows
     .map((row) => toSyncTokenRecord(row))
@@ -83,16 +71,16 @@ export async function listSyncTokens() {
 }
 
 export async function getSyncTokenById(id: string) {
-  const db = getDbInstance() as unknown as DbLike;
-  ensureSyncTokensTable(db);
-  const row = db.prepare("SELECT * FROM sync_tokens WHERE id = ?").get(id);
+  await ensureSyncTokensTable();
+  const db = getDbClient();
+  const row = await db.get("SELECT * FROM sync_tokens WHERE id = ?", id);
   return toSyncTokenRecord(row);
 }
 
 export async function getSyncTokenByHash(tokenHash: string) {
-  const db = getDbInstance() as unknown as DbLike;
-  ensureSyncTokensTable(db);
-  const row = db.prepare("SELECT * FROM sync_tokens WHERE token_hash = ?").get(tokenHash);
+  await ensureSyncTokensTable();
+  const db = getDbClient();
+  const row = await db.get("SELECT * FROM sync_tokens WHERE token_hash = ?", tokenHash);
   return toSyncTokenRecord(row);
 }
 
@@ -101,8 +89,8 @@ export async function createSyncTokenRecord(data: {
   tokenHash: string;
   syncApiKeyId?: string | null;
 }) {
-  const db = getDbInstance() as unknown as DbLike;
-  ensureSyncTokensTable(db);
+  await ensureSyncTokensTable();
+  const db = getDbClient();
 
   const now = new Date().toISOString();
   const record: SyncTokenRecord = {
@@ -116,11 +104,10 @@ export async function createSyncTokenRecord(data: {
     updatedAt: now,
   };
 
-  db.prepare(
+  await db.run(
     `INSERT INTO sync_tokens (
       id, name, token_hash, sync_api_key_id, revoked_at, last_used_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     record.id,
     record.name,
     record.tokenHash,
@@ -136,15 +123,16 @@ export async function createSyncTokenRecord(data: {
 }
 
 export async function revokeSyncToken(id: string) {
-  const db = getDbInstance() as unknown as DbLike;
-  ensureSyncTokensTable(db);
+  await ensureSyncTokensTable();
 
   const existing = await getSyncTokenById(id);
   if (!existing) return null;
   if (existing.revokedAt) return existing;
 
+  const db = getDbClient();
   const now = new Date().toISOString();
-  db.prepare("UPDATE sync_tokens SET revoked_at = ?, updated_at = ? WHERE id = ?").run(
+  await db.run(
+    "UPDATE sync_tokens SET revoked_at = ?, updated_at = ? WHERE id = ?",
     now,
     now,
     id
@@ -154,10 +142,13 @@ export async function revokeSyncToken(id: string) {
 }
 
 export async function touchSyncTokenLastUsed(id: string, usedAt = new Date().toISOString()) {
-  const db = getDbInstance() as unknown as DbLike;
-  ensureSyncTokensTable(db);
-  const result = db
-    .prepare("UPDATE sync_tokens SET last_used_at = ?, updated_at = ? WHERE id = ?")
-    .run(usedAt, usedAt, id);
+  await ensureSyncTokensTable();
+  const db = getDbClient();
+  const result = await db.run(
+    "UPDATE sync_tokens SET last_used_at = ?, updated_at = ? WHERE id = ?",
+    usedAt,
+    usedAt,
+    id
+  );
   return Number(result.changes || 0) > 0;
 }

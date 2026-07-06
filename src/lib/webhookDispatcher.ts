@@ -157,7 +157,7 @@ export async function dispatchEvent(event: WebhookEvent, data: Record<string, an
     await import("./webhooks/integrations/telegram");
   const { buildDiscordPayload } = await import("./webhooks/integrations/discord");
 
-  const webhooks = getEnabledWebhooks();
+  const webhooks = await getEnabledWebhooks();
   const payload: WebhookPayload = {
     event,
     timestamp: new Date().toISOString(),
@@ -199,7 +199,7 @@ export async function dispatchEvent(event: WebhookEvent, data: Record<string, an
       const latencyMs = Date.now() - start;
 
       try {
-        insertDelivery({
+        await insertDelivery({
           webhookId: wh.id,
           eventType: event,
           status: result.success ? "success" : "failed",
@@ -212,10 +212,10 @@ export async function dispatchEvent(event: WebhookEvent, data: Record<string, an
         // Delivery logging is best-effort
       }
 
-      recordWebhookDelivery(wh.id, result.status, result.success);
+      await recordWebhookDelivery(wh.id, result.status, result.success);
       return { webhookId: wh.id, ...result };
     });
 
   await Promise.allSettled(deliveries);
-  disableWebhooksWithHighFailures(10);
+  await disableWebhooksWithHighFailures(10);
 }

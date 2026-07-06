@@ -11,7 +11,7 @@
 import fs from "fs";
 import path from "path";
 import { ZipFile } from "yazl";
-import { getDbInstance, isCloud, isBuildPhase, DATA_DIR } from "../db/core";
+import { getDbClient, isCloud, isBuildPhase, DATA_DIR } from "../db/core";
 import { getLegacyDotDataDir, isSamePath } from "../dataPaths";
 import { protectPayloadForLog } from "../logPayloads";
 import { sanitizePII } from "../piiSanitizer";
@@ -251,9 +251,9 @@ export async function archiveLegacyRequestLogs() {
   return archiveFilename;
 }
 
-export function migrateUsageJsonToSqlite() {
+export async function migrateUsageJsonToSqlite() {
   if (!shouldPersistToDisk) return;
-  const db = getDbInstance();
+  const db = getDbClient();
 
   if (USAGE_JSON_FILE && fs.existsSync(USAGE_JSON_FILE)) {
     try {
@@ -264,46 +264,39 @@ export function migrateUsageJsonToSqlite() {
       if (history.length > 0) {
         console.log(`[usageDb] Migrating ${history.length} usage entries from JSON → SQLite...`);
 
-        const insert = db.prepare(`
-          INSERT INTO usage_history (provider, model, connection_id, api_key_id, api_key_name,
-            tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_reasoning,
-            status, success, latency_ms, ttft_ms, error_code, combo_strategy, timestamp)
-          VALUES (@provider, @model, @connectionId, @apiKeyId, @apiKeyName,
-            @tokensInput, @tokensOutput, @tokensCacheRead, @tokensCacheCreation, @tokensReasoning,
-            @status, @success, @latencyMs, @ttftMs, @errorCode, @comboStrategy, @timestamp)
-        `);
-
-        const tx = db.transaction(() => {
+        await db.transaction(async (c) => {
           for (const entry of history) {
-            insert.run({
-              provider: entry.provider || null,
-              model: entry.model || null,
-              connectionId: entry.connectionId || null,
-              apiKeyId: entry.apiKeyId || null,
-              apiKeyName: entry.apiKeyName || null,
-              tokensInput:
-                entry.tokens?.input ?? entry.tokens?.prompt_tokens ?? entry.tokens?.in ?? 0,
-              tokensOutput:
-                entry.tokens?.output ?? entry.tokens?.completion_tokens ?? entry.tokens?.out ?? 0,
-              tokensCacheRead: entry.tokens?.cacheRead ?? entry.tokens?.cached_tokens ?? 0,
-              tokensCacheCreation:
-                entry.tokens?.cacheCreation ?? entry.tokens?.cache_creation_input_tokens ?? 0,
-              tokensReasoning: entry.tokens?.reasoning ?? entry.tokens?.reasoning_tokens ?? 0,
-              status: entry.status || null,
-              success: entry.success === false ? 0 : 1,
-              latencyMs: Number.isFinite(Number(entry.latencyMs)) ? Number(entry.latencyMs) : 0,
-              ttftMs: Number.isFinite(Number(entry.timeToFirstTokenMs))
+            await c.run(
+              `
+              INSERT INTO usage_history (provider, model, connection_id, api_key_id, api_key_name,
+                tokens_input, tokens_output, tokens_cache_read, tokens_cache_creation, tokens_reasoning,
+                status, success, latency_ms, ttft_ms, error_code, combo_strategy, timestamp)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+              entry.provider || null,
+              entry.model || null,
+              entry.connectionId || null,
+              entry.apiKeyId || null,
+              entry.apiKeyName || null,
+              entry.tokens?.input ?? entry.tokens?.prompt_tokens ?? entry.tokens?.in ?? 0,
+              entry.tokens?.output ?? entry.tokens?.completion_tokens ?? entry.tokens?.out ?? 0,
+              entry.tokens?.cacheRead ?? entry.tokens?.cached_tokens ?? 0,
+              entry.tokens?.cacheCreation ?? entry.tokens?.cache_creation_input_tokens ?? 0,
+              entry.tokens?.reasoning ?? entry.tokens?.reasoning_tokens ?? 0,
+              entry.status || null,
+              entry.success === false ? 0 : 1,
+              Number.isFinite(Number(entry.latencyMs)) ? Number(entry.latencyMs) : 0,
+              Number.isFinite(Number(entry.timeToFirstTokenMs))
                 ? Number(entry.timeToFirstTokenMs)
                 : Number.isFinite(Number(entry.latencyMs))
                   ? Number(entry.latencyMs)
                   : 0,
-              errorCode: entry.errorCode || null,
-              comboStrategy: entry.comboStrategy || entry.combo_strategy || "direct",
-              timestamp: entry.timestamp || new Date().toISOString(),
-            });
+              entry.errorCode || null,
+              entry.comboStrategy || entry.combo_strategy || "direct",
+              entry.timestamp || new Date().toISOString()
+            );
           }
         });
-        tx();
         console.log(`[usageDb] ✓ Migrated ${history.length} usage entries`);
       }
 
@@ -322,20 +315,7 @@ export function migrateUsageJsonToSqlite() {
       if (logs.length > 0) {
         console.log(`[usageDb] Migrating ${logs.length} call log entries from JSON → SQLite...`);
 
-        const insert = db.prepare(`
-          INSERT OR IGNORE INTO call_logs (id, timestamp, method, path, status, model, requested_model, provider,
-            account, connection_id, duration, tokens_in, tokens_out, source_format, target_format,
-            api_key_id, api_key_name, combo_name, combo_step_id, combo_execution_key, error_summary,
-            detail_state, artifact_relpath, artifact_size_bytes, artifact_sha256,
-            has_request_body, has_response_body, has_pipeline_details, request_summary)
-          VALUES (@id, @timestamp, @method, @path, @status, @model, @requestedModel, @provider,
-            @account, @connectionId, @duration, @tokensIn, @tokensOut, @sourceFormat, @targetFormat,
-            @apiKeyId, @apiKeyName, @comboName, @comboStepId, @comboExecutionKey, @errorSummary,
-            @detailState, @artifactRelPath, @artifactSizeBytes, @artifactSha256,
-            @hasRequestBody, @hasResponseBody, @hasPipelineDetails, @requestSummary)
-        `);
-
-        const tx = db.transaction(() => {
+        await db.transaction(async (c) => {
           for (const log of logs) {
             const id = log.id || `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
             const timestamp = log.timestamp || new Date().toISOString();
@@ -354,10 +334,10 @@ export function migrateUsageJsonToSqlite() {
               protectedResponseBody !== null ||
               protectedError !== null;
 
-            let detailState: "none" | "ready" | "missing" = "none";
-            let artifactRelPath: string | null = null;
-            let artifactSizeBytes: number | null = null;
-            let artifactSha256: string | null = null;
+            let detailState = "none";
+            let artifactRelPath = null;
+            let artifactSizeBytes = null;
+            let artifactSha256 = null;
 
             if (detailExpected) {
               const artifact: CallLogArtifact = {
@@ -405,45 +385,54 @@ export function migrateUsageJsonToSqlite() {
               }
             }
 
-            insert.run({
+            const errorSummary =
+              typeof protectedError === "string"
+                ? protectedError.slice(0, 4000)
+                : protectedError
+                  ? JSON.stringify(protectedError).slice(0, 4000)
+                  : null;
+
+            await c.run(
+              `
+              INSERT OR IGNORE INTO call_logs (id, timestamp, method, path, status, model, requested_model, provider,
+                account, connection_id, duration, tokens_in, tokens_out, source_format, target_format,
+                api_key_id, api_key_name, combo_name, combo_step_id, combo_execution_key, error_summary,
+                detail_state, artifact_relpath, artifact_size_bytes, artifact_sha256,
+                has_request_body, has_response_body, has_pipeline_details, request_summary)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
               id,
               timestamp,
-              method: log.method || "POST",
-              path: log.path || null,
-              status: log.status || 0,
-              model: log.model || null,
-              requestedModel: log.requestedModel || null,
-              provider: log.provider || null,
-              account: log.account || null,
-              connectionId: log.connectionId || null,
-              duration: log.duration || 0,
-              tokensIn: log.tokens?.in ?? 0,
-              tokensOut: log.tokens?.out ?? 0,
-              sourceFormat: log.sourceFormat || null,
-              targetFormat: log.targetFormat || null,
-              apiKeyId: log.apiKeyId || null,
-              apiKeyName: log.apiKeyName || null,
-              comboName: log.comboName || null,
-              comboStepId: log.comboStepId || null,
-              comboExecutionKey: log.comboExecutionKey || log.comboStepId || null,
-              errorSummary:
-                typeof protectedError === "string"
-                  ? protectedError.slice(0, 4000)
-                  : protectedError
-                    ? JSON.stringify(protectedError).slice(0, 4000)
-                    : null,
+              log.method || "POST",
+              log.path || null,
+              log.status || 0,
+              log.model || null,
+              log.requestedModel || null,
+              log.provider || null,
+              log.account || null,
+              log.connectionId || null,
+              log.duration || 0,
+              log.tokens?.in ?? 0,
+              log.tokens?.out ?? 0,
+              log.sourceFormat || null,
+              log.targetFormat || null,
+              log.apiKeyId || null,
+              log.apiKeyName || null,
+              log.comboName || null,
+              log.comboStepId || null,
+              log.comboExecutionKey || log.comboStepId || null,
+              errorSummary,
               detailState,
               artifactRelPath,
               artifactSizeBytes,
               artifactSha256,
-              hasRequestBody: protectedRequestBody ? 1 : 0,
-              hasResponseBody: protectedResponseBody ? 1 : 0,
-              hasPipelineDetails: 0,
-              requestSummary: buildLegacyRequestSummary(log.requestType, protectedRequestBody),
-            });
+              protectedRequestBody ? 1 : 0,
+              protectedResponseBody ? 1 : 0,
+              0,
+              buildLegacyRequestSummary(log.requestType, protectedRequestBody)
+            );
           }
         });
-        tx();
         console.log(`[usageDb] ✓ Migrated ${logs.length} call log entries`);
       }
 
@@ -464,7 +453,7 @@ if (shouldPersistToDisk) {
   }
 
   try {
-    migrateUsageJsonToSqlite();
+    await migrateUsageJsonToSqlite();
   } catch {
     // Best-effort startup migration.
   }

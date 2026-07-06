@@ -84,7 +84,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
 
   try {
     const { id } = await params;
-    const webhook = getWebhook(id);
+    const webhook = await getWebhook(id);
     if (!webhook) {
       return NextResponse.json({ error: "Webhook not found" }, { status: 404 });
     }
@@ -132,7 +132,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     const result = await testFetch(fetchUrl, payloadSent, extraHeaders);
 
     try {
-      insertDelivery({
+      await insertDelivery({
         webhookId: webhook.id,
         eventType: "test.ping",
         status: result.success ? "success" : "failed",
@@ -144,7 +144,7 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     } catch {
       // delivery logging is best-effort
     }
-    recordWebhookDelivery(webhook.id, result.status, result.success);
+    await recordWebhookDelivery(webhook.id, result.status, result.success);
 
     return NextResponse.json({
       delivered: result.success,

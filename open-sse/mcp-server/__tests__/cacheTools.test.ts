@@ -41,7 +41,7 @@ describe("cache MCP tools registration", () => {
 
   beforeEach(async () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const server = createMcpServer();
+    const server = await createMcpServer();
     await server.connect(serverTransport);
     client = new Client({ name: "cache-tools-test", version: "1.0.0" });
     await client.connect(clientTransport);

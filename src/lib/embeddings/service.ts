@@ -71,7 +71,7 @@ export async function createEmbeddingResponse(
 
         let settings = {};
         try {
-          settings = getDatabaseSettings();
+          settings = await getDatabaseSettings();
         } catch {}
 
         // Inject the combo's configured dimensions into the request body so that

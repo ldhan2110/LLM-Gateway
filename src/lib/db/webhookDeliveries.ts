@@ -1,4 +1,4 @@
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 
 export interface WebhookDelivery {
@@ -19,7 +19,7 @@ export type WebhookDeliverySafe = Omit<WebhookDelivery, "payload_snapshot">;
 
 const MAX_DELIVERIES_PER_WEBHOOK = 100;
 
-export function insertDelivery(opts: {
+export async function insertDelivery(opts: {
   webhookId: string;
   eventType: string;
   status: string;
@@ -27,29 +27,17 @@ export function insertDelivery(opts: {
   latencyMs?: number | null;
   error?: string | null;
   payloadSnapshot?: string | null;
-}): void {
-  const db = getDbInstance();
-  const insertStmt = db.prepare(
-    `INSERT INTO webhook_deliveries
-       (webhook_id, event_type, status, http_status, latency_ms, error, payload_snapshot)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  );
-  const rotateStmt = db.prepare(
-    `DELETE FROM webhook_deliveries
-     WHERE webhook_id = ?
-       AND id NOT IN (
-         SELECT id FROM webhook_deliveries
-         WHERE webhook_id = ?
-         ORDER BY created_at DESC, id DESC
-         LIMIT ?
-       )`
-  );
+}): Promise<void> {
+  const db = getDbClient();
   // Sanitize the error before persistence so raw stack traces, hostnames or
   // upstream-internal messages never enter the audit log. The audit log is
   // read back via the deliveries API and rendered in the dashboard.
   const sanitizedError = opts.error != null ? sanitizeErrorMessage(opts.error) || null : null;
-  db.transaction(() => {
-    insertStmt.run(
+  await db.transaction(async (c) => {
+    await c.run(
+      `INSERT INTO webhook_deliveries
+         (webhook_id, event_type, status, http_status, latency_ms, error, payload_snapshot)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
       opts.webhookId,
       opts.eventType,
       opts.status,
@@ -58,20 +46,32 @@ export function insertDelivery(opts: {
       sanitizedError,
       opts.payloadSnapshot ?? null
     );
-    rotateStmt.run(opts.webhookId, opts.webhookId, MAX_DELIVERIES_PER_WEBHOOK);
-  })();
+    await c.run(
+      `DELETE FROM webhook_deliveries
+       WHERE webhook_id = ?
+         AND id NOT IN (
+           SELECT id FROM webhook_deliveries
+           WHERE webhook_id = ?
+           ORDER BY created_at DESC, id DESC
+           LIMIT ?
+         )`,
+      opts.webhookId,
+      opts.webhookId,
+      MAX_DELIVERIES_PER_WEBHOOK
+    );
+  });
 }
 
 /** List recent deliveries excluding `payload_snapshot` (default — used by UI). */
-export function getDeliveries(webhookId: string, limit: number): WebhookDeliverySafe[] {
-  const db = getDbInstance();
-  return db
-    .prepare(
-      `SELECT id, webhook_id, event_type, status, http_status, latency_ms, error, created_at
+export async function getDeliveries(webhookId: string, limit: number): Promise<WebhookDeliverySafe[]> {
+  const db = getDbClient();
+  return db.all<WebhookDeliverySafe>(
+    `SELECT id, webhook_id, event_type, status, http_status, latency_ms, error, created_at
        FROM webhook_deliveries
        WHERE webhook_id = ?
        ORDER BY created_at DESC, id DESC
-       LIMIT ?`
-    )
-    .all(webhookId, limit) as WebhookDeliverySafe[];
+       LIMIT ?`,
+    webhookId,
+    limit
+  );
 }

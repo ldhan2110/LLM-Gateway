@@ -4,8 +4,7 @@
  * Provides functions to retrieve database statistics including size, table counts, and performance metrics.
  */
 
-import type { SqliteAdapter } from "./adapters/types";
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 export interface DatabaseStats {
   totalSize: number;
@@ -24,41 +23,40 @@ export interface DatabaseStats {
   cacheSize: number;
 }
 
-export function getDatabaseStats(): DatabaseStats {
-  const db = getDbInstance();
+export async function getDatabaseStats(): Promise<DatabaseStats> {
+  const db = getDbClient();
 
-  const pageSize = db.pragma("page_size", { simple: true }) as number;
-  const pageCount = db.pragma("page_count", { simple: true }) as number;
-  const cacheSize = db.pragma("cache_size", { simple: true }) as number;
+  const pageSize = (await db.pragma("page_size", { simple: true })) as number;
+  const pageCount = (await db.pragma("page_count", { simple: true })) as number;
+  const cacheSize = (await db.pragma("cache_size", { simple: true })) as number;
   const totalSize = pageSize * pageCount;
 
-  const tables = db
-    .prepare(
-      `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
-    )
-    .all() as Array<{ name: string }>;
+  const tables = await db.all<{ name: string }>(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+  );
 
-  const tableStats = tables.map((table) => {
-    const rowCount = db.prepare(`SELECT COUNT(*) as count FROM ${table.name}`).get() as {
-      count: number;
-    };
+  const tableStats = await Promise.all(
+    tables.map(async (table) => {
+      const rowCount = await db.get<{ count: number }>(
+        `SELECT COUNT(*) as count FROM ${table.name}`
+      );
 
-    const tableSize = db
-      .prepare(`SELECT SUM(pgsize) as size FROM dbstat WHERE name = ?`)
-      .get(table.name) as { size: number | null };
+      const tableSize = await db.get<{ size: number | null }>(
+        `SELECT SUM(pgsize) as size FROM dbstat WHERE name = ?`,
+        table.name
+      );
 
-    return {
-      name: table.name,
-      rowCount: rowCount.count,
-      size: tableSize?.size || 0,
-    };
-  });
+      return {
+        name: table.name,
+        rowCount: rowCount?.count ?? 0,
+        size: tableSize?.size || 0,
+      };
+    })
+  );
 
-  const indexes = db
-    .prepare(
-      `SELECT name, tbl_name as tableName FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY name`
-    )
-    .all() as Array<{ name: string; tableName: string }>;
+  const indexes = await db.all<{ name: string; tableName: string }>(
+    `SELECT name, tbl_name as tableName FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%' ORDER BY name`
+  );
 
   return {
     totalSize,

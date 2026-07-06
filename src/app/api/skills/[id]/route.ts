@@ -61,7 +61,7 @@ export async function PUT(request: Request, props: { params: Promise<{ id: strin
       return NextResponse.json({ error: "No update payload provided" }, { status: 400 });
     }
 
-    updateSkill(id, patch);
+    await updateSkill(id, patch);
 
     await skillRegistry.loadFromDatabase();
 

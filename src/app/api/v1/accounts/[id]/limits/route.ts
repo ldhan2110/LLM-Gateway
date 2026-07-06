@@ -20,7 +20,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   }
 
   const resolvedParams = await params;
-  const limits = getAccountKeyLimit(resolvedParams.id);
+  const limits = await getAccountKeyLimit(resolvedParams.id);
   return NextResponse.json({ accountId: resolvedParams.id, limits: limits ?? null });
 }
 
@@ -46,7 +46,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
   }
 
   const resolvedParams = await params;
-  setAccountKeyLimit(resolvedParams.id, validation.data);
-  const updated = getAccountKeyLimit(resolvedParams.id);
+  await setAccountKeyLimit(resolvedParams.id, validation.data);
+  const updated = await getAccountKeyLimit(resolvedParams.id);
   return NextResponse.json({ accountId: resolvedParams.id, limits: updated });
 }

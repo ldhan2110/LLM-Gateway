@@ -106,7 +106,7 @@ export async function runPluginDoctor(pluginDir: string, pluginName: string): Pr
   }
 
   // Check 5: db_status_correct
-  const dbRow = getPluginByName(pluginName);
+  const dbRow = await getPluginByName(pluginName);
   if (dbRow) {
     checks.push({
       name: "db_status_correct",

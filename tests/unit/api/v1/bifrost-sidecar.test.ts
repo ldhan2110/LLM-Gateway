@@ -227,11 +227,11 @@ test("bifrost route: records relay usage after SSE stream completion", async () 
   const res = await POST(req);
   assert.equal(res.status, 200);
   assert.equal(res.headers.get("X-Routed-By"), "bifrost");
-  assert.equal(getRelayLogs(relayToken.id, 10).length, 0);
+  assert.equal((await getRelayLogs(relayToken.id, 10)).length, 0);
 
   assert.match(await res.text(), /delta/);
 
-  const logs = getRelayLogs(relayToken.id, 10);
+  const logs = await getRelayLogs(relayToken.id, 10);
   assert.equal(logs.length, 1);
   assert.equal(logs[0].status, "success");
   assert.equal(logs[0].status_code, 200);

@@ -2,7 +2,7 @@
  * db/settings/lkgp.ts — Last Known Good Provider (LKGP) persistence.
  */
 
-import { getDbInstance } from "../core";
+import { getDbClient } from "../core";
 
 export interface LKGPRecord {
   provider: string;
@@ -10,11 +10,12 @@ export interface LKGPRecord {
 }
 
 export async function getLKGP(comboName: string, modelId: string): Promise<LKGPRecord | null> {
-  const db = getDbInstance();
+  const db = getDbClient();
   const key = `${comboName}:${modelId}`;
-  const row = db
-    .prepare("SELECT value FROM key_value WHERE namespace = 'lkgp' AND key = ?")
-    .get(key) as { value?: string } | undefined;
+  const row = await db.get<{ value?: string }>(
+    "SELECT value FROM key_value WHERE namespace = 'lkgp' AND key = ?",
+    key
+  );
   if (!row?.value) return null;
   try {
     const parsed = JSON.parse(row.value);
@@ -32,18 +33,19 @@ export async function setLKGP(
   modelId: string,
   providerId: string,
   connectionId?: string
-) {
-  const db = getDbInstance();
+): Promise<void> {
+  const db = getDbClient();
   const key = `${comboName}:${modelId}`;
   const value: LKGPRecord = { provider: providerId };
   if (connectionId) value.connectionId = connectionId;
-  db.prepare("INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('lkgp', ?, ?)").run(
+  await db.run(
+    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('lkgp', ?, ?)",
     key,
     JSON.stringify(value)
   );
 }
 
-export function clearAllLKGP(): void {
-  const db = getDbInstance();
-  db.prepare("DELETE FROM key_value WHERE namespace = 'lkgp'").run();
+export async function clearAllLKGP(): Promise<void> {
+  const db = getDbClient();
+  await db.run("DELETE FROM key_value WHERE namespace = 'lkgp'");
 }

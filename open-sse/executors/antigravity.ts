@@ -217,14 +217,15 @@ let creditCacheHydrated = false;
 function hydrateCreditCacheFromDb(): void {
   if (creditCacheHydrated) return;
   creditCacheHydrated = true;
-  try {
-    const persisted = getAllPersistedCreditBalances();
-    for (const [accountId, balance] of persisted) {
-      if (!creditBalanceCache.has(accountId)) {
-        creditBalanceCache.set(accountId, { balance, updatedAt: Date.now() });
+  getAllPersistedCreditBalances()
+    .then((persisted) => {
+      for (const [accountId, balance] of persisted) {
+        if (!creditBalanceCache.has(accountId)) {
+          creditBalanceCache.set(accountId, { balance, updatedAt: Date.now() });
+        }
       }
-    }
-  } catch {}
+    })
+    .catch(() => {});
 }
 
 function evictStaleCreditBalanceEntries(): void {
@@ -263,9 +264,7 @@ export function updateAntigravityRemainingCredits(accountId: string, balance: nu
     if (oldestKey !== undefined) creditBalanceCache.delete(oldestKey);
   }
   creditBalanceCache.set(accountId, { balance, updatedAt: Date.now() });
-  try {
-    persistCreditBalance(accountId, balance);
-  } catch {}
+  persistCreditBalance(accountId, balance).catch(() => {});
 }
 
 function isCreditsExhausted(accountId: string): boolean {
@@ -302,9 +301,12 @@ function markCreditsExhausted(accountId: string): void {
  * cross-request and post-restart routing skips this connection until the
  * cooldown expires. Exported for unit testing. @internal
  */
-export function markConnectionQuotaExhausted(connectionId: string, retryAfterMs: number): void {
+export async function markConnectionQuotaExhausted(
+  connectionId: string,
+  retryAfterMs: number
+): Promise<void> {
   try {
-    setConnectionRateLimitUntil(connectionId, Date.now() + retryAfterMs);
+    await setConnectionRateLimitUntil(connectionId, Date.now() + retryAfterMs);
   } catch {
     // DB write failure must never crash the request path
   }
@@ -1282,7 +1284,7 @@ export class AntigravityExecutor extends BaseExecutor {
               );
 
               if (decision.kind === "full_quota_exhausted" && retryMs) {
-                markConnectionQuotaExhausted(accountId, retryMs);
+                await markConnectionQuotaExhausted(accountId, retryMs);
               }
 
               const creditsAlreadyInjected =

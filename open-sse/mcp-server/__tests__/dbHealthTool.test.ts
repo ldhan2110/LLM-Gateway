@@ -36,7 +36,7 @@ describe("omniroute_db_health_check MCP tool", () => {
       checkedAt: new Date().toISOString(),
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const server = createMcpServer();
+    const server = await createMcpServer();
     await server.connect(serverTransport);
     client = new Client({ name: "test-client", version: "1.0.0" });
     await client.connect(clientTransport);

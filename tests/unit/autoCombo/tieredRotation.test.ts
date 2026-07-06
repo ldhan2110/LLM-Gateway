@@ -56,13 +56,13 @@ function makeConfig(name: string): AutoComboConfig {
 describe("Connection Density Factor", () => {
   const baseCandidate = makeCandidate({ provider: "cerebras", model: "llama-70b" });
 
-  it("multi-connection provider scores higher than single-connection at same quality", () => {
+  it("multi-connection provider scores higher than single-connection at same quality", async () => {
     const multiConn = makeCandidate({ provider: "cerebras", model: "llama-70b", connectionPoolSize: 43 });
     const singleConn = makeCandidate({ provider: "anthropic", model: "claude-sonnet", connectionPoolSize: 1 });
     const pool = [multiConn, singleConn];
 
-    const multiFactors = calculateFactors(multiConn, pool, "coding", getTaskFitness);
-    const singleFactors = calculateFactors(singleConn, pool, "coding", getTaskFitness);
+    const multiFactors = await calculateFactors(multiConn, pool, "coding", getTaskFitness);
+    const singleFactors = await calculateFactors(singleConn, pool, "coding", getTaskFitness);
     const multiScore = calculateScore(multiFactors, DEFAULT_WEIGHTS);
     const singleScore = calculateScore(singleFactors, DEFAULT_WEIGHTS);
 
@@ -71,14 +71,14 @@ describe("Connection Density Factor", () => {
     expect(multiScore).toBeGreaterThan(singleScore);
   });
 
-  it("density scales linearly from 0 to 10 connections, caps at 10+", () => {
+  it("density scales linearly from 0 to 10 connections, caps at 10+", async () => {
     const make = (size: number) => makeCandidate({ connectionPoolSize: size });
     const sizes = [1, 2, 5, 10, 20, 43];
-    const densities = sizes.map((s) => {
+    const densities = await Promise.all(sizes.map(async (s) => {
       const c = make(s);
       const pool = [c];
-      return calculateFactors(c, pool, "coding", getTaskFitness).connectionDensity;
-    });
+      return (await calculateFactors(c, pool, "coding", getTaskFitness)).connectionDensity;
+    }));
 
     expect(densities[0]).toBeCloseTo(0.0, 5);
     expect(densities[1]).toBeCloseTo(0.1, 5);
@@ -88,10 +88,10 @@ describe("Connection Density Factor", () => {
     expect(densities[5]).toBe(1.0);
   });
 
-  it("missing connectionPoolSize defaults to 1 (backward compat)", () => {
+  it("missing connectionPoolSize defaults to 1 (backward compat)", async () => {
     const candidate = makeCandidate({ provider: "x" });
     const pool = [candidate];
-    const factors = calculateFactors(candidate, pool, "coding", getTaskFitness);
+    const factors = await calculateFactors(candidate, pool, "coding", getTaskFitness);
     expect(factors.connectionDensity).toBe(0.0);
   });
 
@@ -106,7 +106,7 @@ describe("Tiered Rotation in selectProvider", () => {
     resetDiversity();
   });
 
-  it("smart combo rotates within top tier across many requests", () => {
+  it("smart combo rotates within top tier across many requests", async () => {
     const topA = makeCandidate({ provider: "openai", model: "gpt-4o", quotaRemaining: 95 });
     const topB = makeCandidate({ provider: "anthropic", model: "claude-opus", quotaRemaining: 90 });
     const topC = makeCandidate({ provider: "google", model: "gemini-ultra", quotaRemaining: 88 });
@@ -116,14 +116,14 @@ describe("Tiered Rotation in selectProvider", () => {
     const config = makeConfig("smart");
     const seen = new Set<string>();
     for (let i = 0; i < 50; i++) {
-      const result = selectProvider(config, pool, "coding");
+      const result = await selectProvider(config, pool, "coding");
       seen.add(`${result.provider}/${result.model}`);
     }
     expect(seen.size).toBeGreaterThanOrEqual(2);
     expect(seen.has("openai/gpt-4o") || seen.has("anthropic/claude-opus")).toBe(true);
   });
 
-  it("cheap combo pulls from rest tier (lower scores) more often than smart", () => {
+  it("cheap combo pulls from rest tier (lower scores) more often than smart", async () => {
     const top = makeCandidate({ provider: "openai", model: "gpt-4o", quotaRemaining: 100 });
     const rest = makeCandidate({
       provider: "cheap-provider",
@@ -137,17 +137,17 @@ describe("Tiered Rotation in selectProvider", () => {
     const config = makeConfig("cheap");
     const counts: Record<string, number> = {};
     for (let i = 0; i < 200; i++) {
-      const result = selectProvider(config, pool, "coding");
+      const result = await selectProvider(config, pool, "coding");
       counts[result.provider] = (counts[result.provider] ?? 0) + 1;
     }
     expect(counts["cheap-provider"]).toBeGreaterThan(0);
   });
 
-  it("single-candidate pool always returns the same candidate", () => {
+  it("single-candidate pool always returns the same candidate", async () => {
     const only = makeCandidate({ provider: "only", model: "only-model" });
     const config = makeConfig("smart");
     for (let i = 0; i < 10; i++) {
-      const result = selectProvider(config, [only], "coding");
+      const result = await selectProvider(config, [only], "coding");
       expect(result.provider).toBe("only");
       expect(result.model).toBe("only-model");
     }
@@ -155,7 +155,7 @@ describe("Tiered Rotation in selectProvider", () => {
 });
 
 describe("scorePool with connectionDensity", () => {
-  it("Cerebras with 43 keys ranks above single-connection providers of similar quality", () => {
+  it("Cerebras with 43 keys ranks above single-connection providers of similar quality", async () => {
     const cerebras = makeCandidate({
       provider: "cerebras",
       model: "llama-3.1-70b",
@@ -169,13 +169,13 @@ describe("scorePool with connectionDensity", () => {
       quotaRemaining: 100,
     });
     const pool = [cerebras, anthropic];
-    const scored = scorePool(pool, "coding", DEFAULT_WEIGHTS, getTaskFitness);
+    const scored = await scorePool(pool, "coding", DEFAULT_WEIGHTS, getTaskFitness);
     expect(scored[0].provider).toBe("cerebras");
   });
 });
 
 describe("Per-Connection Rotation", () => {
-  it("rotates across all 43 Cerebras connection IDs, not just one", () => {
+  it("rotates across all 43 Cerebras connection IDs, not just one", async () => {
     const cerebrasCandidates: ProviderCandidate[] = Array.from({ length: 43 }, (_, i) =>
       makeCandidate({
         provider: "cerebras",
@@ -187,13 +187,13 @@ describe("Per-Connection Rotation", () => {
 
     const seenConnections = new Set<string>();
     for (let i = 0; i < 200; i++) {
-      const result = selectProvider(config, cerebrasCandidates, "coding");
+      const result = await selectProvider(config, cerebrasCandidates, "coding");
       if (result.connectionId) seenConnections.add(result.connectionId);
     }
     expect(seenConnections.size).toBeGreaterThanOrEqual(10);
   });
 
-  it("different combos maintain independent round-robin state", () => {
+  it("different combos maintain independent round-robin state", async () => {
     const candidates: ProviderCandidate[] = Array.from({ length: 5 }, (_, i) =>
       makeCandidate({ provider: "p", model: "m", connectionId: `c-${i}` })
     );
@@ -201,20 +201,20 @@ describe("Per-Connection Rotation", () => {
     const fastConfig = makeConfig("fast-B");
 
     for (let i = 0; i < 5; i++) {
-      selectProvider(smartConfig, candidates, "coding");
+      await selectProvider(smartConfig, candidates, "coding");
     }
     const smartResults: string[] = [];
     for (let i = 0; i < 5; i++) {
-      const r = selectProvider(smartConfig, candidates, "coding");
+      const r = await selectProvider(smartConfig, candidates, "coding");
       if (r.connectionId) smartResults.push(r.connectionId);
     }
 
     for (let i = 0; i < 5; i++) {
-      selectProvider(fastConfig, candidates, "coding");
+      await selectProvider(fastConfig, candidates, "coding");
     }
     const fastResults: string[] = [];
     for (let i = 0; i < 5; i++) {
-      const r = selectProvider(fastConfig, candidates, "coding");
+      const r = await selectProvider(fastConfig, candidates, "coding");
       if (r.connectionId) fastResults.push(r.connectionId);
     }
 
@@ -224,14 +224,14 @@ describe("Per-Connection Rotation", () => {
     expect(new Set(fastResults).size).toBeGreaterThan(1);
   });
 
-  it("tied-score candidates from same provider+model are all reachable", () => {
+  it("tied-score candidates from same provider+model are all reachable", async () => {
     const candidates: ProviderCandidate[] = Array.from({ length: 5 }, (_, i) =>
       makeCandidate({ provider: "free", model: "free-model", connectionId: `key-${i}` })
     );
     const config = makeConfig("smart");
     const visited = new Set<string>();
     for (let i = 0; i < 20; i++) {
-      const result = selectProvider(config, candidates, "coding");
+      const result = await selectProvider(config, candidates, "coding");
       if (result.connectionId) visited.add(result.connectionId);
     }
     expect(visited.size).toBeGreaterThan(1);

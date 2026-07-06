@@ -12,29 +12,7 @@
  * Part of: Group B — Quota Sharing Engine (plan 22, frente F2).
  */
 
-import { getDbInstance } from "./core";
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-interface StatementLike<TRow = unknown> {
-  all: (...params: unknown[]) => TRow[];
-  get: (...params: unknown[]) => TRow | undefined;
-  run: (...params: unknown[]) => { changes: number };
-}
-
-interface DbLike {
-  prepare: <TRow = unknown>(sql: string) => StatementLike<TRow>;
-}
-
-function getDb(): DbLike {
-  return getDbInstance() as unknown as DbLike;
-}
-
-interface BucketRow {
-  consumed: number;
-}
+import { getDbClient } from "./core";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -64,20 +42,26 @@ export interface ConsumptionEvent {
 // Public API
 // ---------------------------------------------------------------------------
 
+interface BucketRow {
+  consumed: number;
+}
+
 /**
  * Read the consumed value for a single bucket. Returns 0 if no row exists.
  */
-export function getBucket(
+export async function getBucket(
   apiKeyId: string,
   dimensionKey: string,
   bucketIndex: number
-): number {
-  const row = getDb()
-    .prepare<BucketRow>(
-      `SELECT consumed FROM quota_consumption
-       WHERE api_key_id = ? AND dimension_key = ? AND bucket_index = ?`
-    )
-    .get(apiKeyId, dimensionKey, bucketIndex);
+): Promise<number> {
+  const db = getDbClient();
+  const row = await db.get<BucketRow>(
+    `SELECT consumed FROM quota_consumption
+     WHERE api_key_id = ? AND dimension_key = ? AND bucket_index = ?`,
+    apiKeyId,
+    dimensionKey,
+    bucketIndex
+  );
   return row?.consumed ?? 0;
 }
 
@@ -92,23 +76,27 @@ export function getBucket(
  * @param delta         Amount to add (positive number).
  * @param nowMs         Current epoch milliseconds (used for updated_at).
  */
-export function incrementBucket(
+export async function incrementBucket(
   apiKeyId: string,
   dimensionKey: string,
   bucketIndex: number,
   delta: number,
   nowMs: number
-): void {
-  getDb()
-    .prepare(
-      `INSERT INTO quota_consumption (api_key_id, dimension_key, bucket_index, consumed, updated_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT(api_key_id, dimension_key, bucket_index)
-       DO UPDATE SET
-         consumed = consumed + excluded.consumed,
-         updated_at = excluded.updated_at`
-    )
-    .run(apiKeyId, dimensionKey, bucketIndex, delta, nowMs);
+): Promise<void> {
+  const db = getDbClient();
+  await db.run(
+    `INSERT INTO quota_consumption (api_key_id, dimension_key, bucket_index, consumed, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(api_key_id, dimension_key, bucket_index)
+     DO UPDATE SET
+       consumed = consumed + excluded.consumed,
+       updated_at = excluded.updated_at`,
+    apiKeyId,
+    dimensionKey,
+    bucketIndex,
+    delta,
+    nowMs
+  );
 }
 
 /**
@@ -120,26 +108,30 @@ export function incrementBucket(
  * @param currentBucket The current bucket index (floor(nowMs / windowMs)).
  * @returns             { curr, prev } — both default to 0 when row is absent.
  */
-export function getPair(
+export async function getPair(
   apiKeyId: string,
   dimensionKey: string,
   currentBucket: number
-): { curr: number; prev: number } {
+): Promise<{ curr: number; prev: number }> {
   const prevBucket = currentBucket - 1;
+  const db = getDbClient();
 
-  const currRow = getDb()
-    .prepare<BucketRow>(
+  const [currRow, prevRow] = await Promise.all([
+    db.get<BucketRow>(
       `SELECT consumed FROM quota_consumption
-       WHERE api_key_id = ? AND dimension_key = ? AND bucket_index = ?`
-    )
-    .get(apiKeyId, dimensionKey, currentBucket);
-
-  const prevRow = getDb()
-    .prepare<BucketRow>(
+       WHERE api_key_id = ? AND dimension_key = ? AND bucket_index = ?`,
+      apiKeyId,
+      dimensionKey,
+      currentBucket
+    ),
+    db.get<BucketRow>(
       `SELECT consumed FROM quota_consumption
-       WHERE api_key_id = ? AND dimension_key = ? AND bucket_index = ?`
-    )
-    .get(apiKeyId, dimensionKey, prevBucket);
+       WHERE api_key_id = ? AND dimension_key = ? AND bucket_index = ?`,
+      apiKeyId,
+      dimensionKey,
+      prevBucket
+    ),
+  ]);
 
   return {
     curr: currRow?.consumed ?? 0,
@@ -168,20 +160,24 @@ interface ConsumptionRow {
  * @param limit   Maximum rows to return (caller should clamp; default 50).
  * @returns       Array of ConsumptionEvent (may be empty if no data yet).
  */
-export function listConsumptionForPool(poolId: string, limit: number): ConsumptionEvent[] {
+export async function listConsumptionForPool(
+  poolId: string,
+  limit: number
+): Promise<ConsumptionEvent[]> {
   const safeLimit = Math.max(1, Math.min(limit, 500));
   // dimension_key format: "<poolId>:<unit>:<window>"
   // The LIKE pattern uses "%" — escape literal "%" or "_" in poolId defensively.
   const prefix = poolId.replace(/[%_\\]/g, "\\$&") + ":%";
-  const rows = getDb()
-    .prepare<ConsumptionRow>(
-      `SELECT api_key_id, dimension_key, bucket_index, consumed, updated_at
-       FROM quota_consumption
-       WHERE dimension_key LIKE ? ESCAPE '\\'
-       ORDER BY updated_at DESC
-       LIMIT ?`
-    )
-    .all(prefix, safeLimit);
+  const db = getDbClient();
+  const rows = await db.all<ConsumptionRow>(
+    `SELECT api_key_id, dimension_key, bucket_index, consumed, updated_at
+     FROM quota_consumption
+     WHERE dimension_key LIKE ? ESCAPE '\\'
+     ORDER BY updated_at DESC
+     LIMIT ?`,
+    prefix,
+    safeLimit
+  );
 
   return rows.map((r) => {
     const parts = r.dimension_key.split(":");
@@ -204,12 +200,6 @@ export function listConsumptionForPool(poolId: string, limit: number): Consumpti
 // Pool-wide aggregate
 // ---------------------------------------------------------------------------
 
-interface BucketPairRow {
-  api_key_id: string;
-  curr: number;
-  prev: number;
-}
-
 /**
  * Sum the consumed values for a given (dimensionKey, currentBucketIndex) and
  * (dimensionKey, currentBucketIndex - 1) across ALL api_key_id values.
@@ -220,31 +210,33 @@ interface BucketPairRow {
  * @param dimensionKey   "<poolId>:<unit>:<window>" string — same format as consume/peek.
  * @param currentBucket  floor(nowMs / windowMs) — caller must pass the same value.
  */
-export function sumPoolDimension(
+export async function sumPoolDimension(
   dimensionKey: string,
   currentBucket: number
-): { currTotal: number; prevTotal: number } {
+): Promise<{ currTotal: number; prevTotal: number }> {
   const prevBucket = currentBucket - 1;
+  const db = getDbClient();
 
   interface SumRow {
     total: number;
   }
 
-  const currRow = getDb()
-    .prepare<SumRow>(
+  const [currRow, prevRow] = await Promise.all([
+    db.get<SumRow>(
       `SELECT COALESCE(SUM(consumed), 0) AS total
        FROM quota_consumption
-       WHERE dimension_key = ? AND bucket_index = ?`
-    )
-    .get(dimensionKey, currentBucket);
-
-  const prevRow = getDb()
-    .prepare<SumRow>(
+       WHERE dimension_key = ? AND bucket_index = ?`,
+      dimensionKey,
+      currentBucket
+    ),
+    db.get<SumRow>(
       `SELECT COALESCE(SUM(consumed), 0) AS total
        FROM quota_consumption
-       WHERE dimension_key = ? AND bucket_index = ?`
-    )
-    .get(dimensionKey, prevBucket);
+       WHERE dimension_key = ? AND bucket_index = ?`,
+      dimensionKey,
+      prevBucket
+    ),
+  ]);
 
   return {
     currTotal: currRow?.total ?? 0,
@@ -266,9 +258,11 @@ export function sumPoolDimension(
  * @param maxUpdatedAtMs Epoch ms threshold (exclusive lower bound for kept rows).
  * @returns              Number of rows deleted.
  */
-export function gcOlderThan(maxUpdatedAtMs: number): number {
-  const result = getDb()
-    .prepare("DELETE FROM quota_consumption WHERE updated_at < ?")
-    .run(maxUpdatedAtMs);
+export async function gcOlderThan(maxUpdatedAtMs: number): Promise<number> {
+  const db = getDbClient();
+  const result = await db.run(
+    "DELETE FROM quota_consumption WHERE updated_at < ?",
+    maxUpdatedAtMs
+  );
   return result.changes;
 }

@@ -3,7 +3,7 @@
  * CRUD + seed for agent_bridge_bypass table.
  */
 
-import { getDbInstance } from "./core.ts";
+import { getDbClient } from "./core.ts";
 import type { AgentBridgeBypassRow } from "./_rowTypes.ts";
 
 // SQLite rows have source as plain string
@@ -21,41 +21,35 @@ function mapRow(row: AgentBridgeBypassDbRow): AgentBridgeBypassRow {
   };
 }
 
-export function getAllBypassPatterns(): AgentBridgeBypassRow[] {
-  const db = getDbInstance();
-  const rows = db
-    .prepare(
-      "SELECT pattern, source, created_at FROM agent_bridge_bypass ORDER BY source ASC, pattern ASC"
-    )
-    .all() as AgentBridgeBypassDbRow[];
+export async function getAllBypassPatterns(): Promise<AgentBridgeBypassRow[]> {
+  const db = getDbClient();
+  const rows = await db.all<AgentBridgeBypassDbRow>(
+    "SELECT pattern, source, created_at FROM agent_bridge_bypass ORDER BY source ASC, pattern ASC"
+  );
   return rows.map(mapRow);
 }
 
-export function getUserBypassPatterns(): string[] {
-  const db = getDbInstance();
-  const rows = db
-    .prepare("SELECT pattern FROM agent_bridge_bypass WHERE source = 'user' ORDER BY pattern ASC")
-    .all() as Array<{ pattern: string }>;
+export async function getUserBypassPatterns(): Promise<string[]> {
+  const db = getDbClient();
+  const rows = await db.all<{ pattern: string }>(
+    "SELECT pattern FROM agent_bridge_bypass WHERE source = 'user' ORDER BY pattern ASC"
+  );
   return rows.map((r) => r.pattern);
 }
 
-export function replaceUserBypassPatterns(patterns: string[]): void {
-  const db = getDbInstance();
+export async function replaceUserBypassPatterns(patterns: string[]): Promise<void> {
+  const db = getDbClient();
   const now = new Date().toISOString();
 
-  const deleteUserStmt = db.prepare("DELETE FROM agent_bridge_bypass WHERE source = 'user'");
-  const insertStmt = db.prepare(
-    `INSERT INTO agent_bridge_bypass (pattern, source, created_at) VALUES (?, 'user', ?)`
-  );
-
-  const runTransaction = db.transaction(() => {
-    deleteUserStmt.run();
+  await db.transaction(async (c) => {
+    await c.run("DELETE FROM agent_bridge_bypass WHERE source = 'user'");
     for (const pattern of patterns) {
-      insertStmt.run(pattern, now);
+      await c.run(
+        "INSERT INTO agent_bridge_bypass (pattern, source, created_at) VALUES (?, 'user', ?)",
+        pattern, now
+      );
     }
   });
-
-  runTransaction();
 }
 
 /**
@@ -63,19 +57,16 @@ export function replaceUserBypassPatterns(patterns: string[]): void {
  * Only inserts a pattern if it does not already exist in the table.
  * Called at app boot by the AgentBridge manager (F3 will wire this).
  */
-export function seedDefaultBypassPatterns(defaults: string[]): void {
-  const db = getDbInstance();
+export async function seedDefaultBypassPatterns(defaults: string[]): Promise<void> {
+  const db = getDbClient();
   const now = new Date().toISOString();
 
-  const insertIfMissing = db.prepare(
-    `INSERT OR IGNORE INTO agent_bridge_bypass (pattern, source, created_at) VALUES (?, 'default', ?)`
-  );
-
-  const runTransaction = db.transaction(() => {
+  await db.transaction(async (c) => {
     for (const pattern of defaults) {
-      insertIfMissing.run(pattern, now);
+      await c.run(
+        "INSERT OR IGNORE INTO agent_bridge_bypass (pattern, source, created_at) VALUES (?, 'default', ?)",
+        pattern, now
+      );
     }
   });
-
-  runTransaction();
 }

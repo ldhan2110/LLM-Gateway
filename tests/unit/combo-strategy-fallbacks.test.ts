@@ -76,7 +76,7 @@ test.beforeEach(async () => {
   await cleanupTestDataDir();
   fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
   await settingsDb.resetAllPricing();
-  settingsDb.clearAllLKGP();
+  await settingsDb.clearAllLKGP();
 });
 
 test.after(async () => {
@@ -86,7 +86,7 @@ test.after(async () => {
   _resetAllDecks();
   weightedStickyTargets.clear();
   rrStickyTargets.clear();
-  settingsDb.clearAllLKGP();
+  await settingsDb.clearAllLKGP();
   if (ORIGINAL_DATA_DIR === undefined) {
     delete process.env.DATA_DIR;
   } else {

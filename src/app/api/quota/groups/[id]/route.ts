@@ -40,7 +40,7 @@ export async function PATCH(request: Request, { params }: RouteParams): Promise<
       return NextResponse.json(buildErrorBody(400, parsed.error.message), { status: 400 });
     }
 
-    const updated = renameGroup(id, parsed.data.name);
+    const updated = await renameGroup(id, parsed.data.name);
     if (!updated) {
       return NextResponse.json(buildErrorBody(404, "Group not found"), { status: 404 });
     }
@@ -62,7 +62,7 @@ export async function PATCH(request: Request, { params }: RouteParams): Promise<
       }
     }
 
-    const group = getGroup(id);
+    const group = await getGroup(id);
     return NextResponse.json({ group });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to rename group";
@@ -78,7 +78,7 @@ export async function DELETE(request: Request, { params }: RouteParams): Promise
     const { id } = await params;
     let existed: boolean;
     try {
-      existed = deleteGroup(id);
+      existed = await deleteGroup(id);
     } catch (err) {
       // deleteGroup throws when the group is protected ('group-demo') or when
       // pools still reference it — both map to 409 Conflict.

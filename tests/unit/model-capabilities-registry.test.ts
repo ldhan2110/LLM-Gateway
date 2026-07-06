@@ -49,7 +49,7 @@ test.after(() => {
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });
 
-test("canonical model capability resolver lets exact synced metadata override global specs", () => {
+test("canonical model capability resolver lets exact synced metadata override global specs", async () => {
   modelsDevSync.saveModelsDevCapabilities({
     openai: {
       "gpt-4o-2024-11-20": buildCapability({
@@ -89,7 +89,7 @@ test("canonical model capability resolver lets exact synced metadata override gl
   assert.equal(gpt4o.contextWindow, 256000);
   assert.equal(gpt4o.maxInputTokens, 256000);
   assert.equal(gpt4o.maxOutputTokens, 12345);
-  assert.equal(modelCapabilities.getModelContextLimit("openai", "gpt-4o-2024-11-20"), 256000);
+  assert.equal(await modelCapabilities.getModelContextLimit("openai", "gpt-4o-2024-11-20"), 256000);
   assert.equal(modelCapabilities.capMaxOutputTokens("openai/gpt-4o-2024-11-20", 999999), 12345);
 
   const geminiHigh = modelCapabilities.getResolvedModelCapabilities(

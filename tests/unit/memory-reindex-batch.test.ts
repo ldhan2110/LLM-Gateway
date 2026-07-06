@@ -76,8 +76,8 @@ test("runReindexBatch: no embedding source → returns {processed:0, errors:0}",
   insertMemory(db, "ri-2", "Content two.");
 
   // Mark both as needing reindex
-  memoryVec.markMemoryNeedsReindex("ri-1", true);
-  memoryVec.markMemoryNeedsReindex("ri-2", true);
+  await memoryVec.markMemoryNeedsReindex("ri-1", true);
+  await memoryVec.markMemoryNeedsReindex("ri-2", true);
 
   // No embedding source configured (default settings: embeddingSource=auto, no model)
   // → runReindexBatch exits early on "no embedding source"
@@ -86,7 +86,7 @@ test("runReindexBatch: no embedding source → returns {processed:0, errors:0}",
   assert.deepEqual(result, { processed: 0, errors: 0 }, "no source → early exit with 0 processed");
 
   // Queue should still have 2 items (not consumed)
-  const pending = getReindexPending();
+  const pending = await getReindexPending();
   assert.equal(pending, 2, "queue should still have 2 items when no source configured");
 });
 
@@ -95,8 +95,8 @@ test("runReindexBatch: no vector store → returns {processed:0, errors:0}", asy
   insertMemory(db, "vec-1", "Vector content one.");
   insertMemory(db, "vec-2", "Vector content two.");
 
-  memoryVec.markMemoryNeedsReindex("vec-1", true);
-  memoryVec.markMemoryNeedsReindex("vec-2", true);
+  await memoryVec.markMemoryNeedsReindex("vec-1", true);
+  await memoryVec.markMemoryNeedsReindex("vec-2", true);
 
   // VECTOR_STORE_DISABLE_VEC=true → getVectorStore() returns null
   // With no embedding source either, returns {processed:0, errors:0}
@@ -108,22 +108,22 @@ test("runReindexBatch: no vector store → returns {processed:0, errors:0}", asy
   assert.equal(result.processed + result.errors, 0, "without source+vec, nothing is processed");
 });
 
-test("getReindexPending: returns count of memories with needs_reindex=1", () => {
+test("getReindexPending: returns count of memories with needs_reindex=1", async () => {
   const db = core.getDbInstance();
   insertMemory(db, "pend-1", "Pending one.");
   insertMemory(db, "pend-2", "Pending two.");
   insertMemory(db, "pend-3", "Pending three.");
 
-  assert.equal(getReindexPending(), 0, "initially 0 pending");
+  assert.equal(await getReindexPending(), 0, "initially 0 pending");
 
-  memoryVec.markMemoryNeedsReindex("pend-1", true);
-  assert.equal(getReindexPending(), 1);
+  await memoryVec.markMemoryNeedsReindex("pend-1", true);
+  assert.equal(await getReindexPending(), 1);
 
-  memoryVec.markMemoryNeedsReindex("pend-2", true);
-  assert.equal(getReindexPending(), 2);
+  await memoryVec.markMemoryNeedsReindex("pend-2", true);
+  assert.equal(await getReindexPending(), 2);
 
-  memoryVec.markMemoryNeedsReindex("pend-3", true);
-  assert.equal(getReindexPending(), 3);
+  await memoryVec.markMemoryNeedsReindex("pend-3", true);
+  assert.equal(await getReindexPending(), 3);
 });
 
 test("runReindexBatch: respects the limit parameter", async () => {
@@ -131,10 +131,10 @@ test("runReindexBatch: respects the limit parameter", async () => {
   // Insert 5 memories, mark all as needing reindex
   for (let i = 1; i <= 5; i++) {
     insertMemory(db, `lim-${i}`, `Content ${i}.`);
-    memoryVec.markMemoryNeedsReindex(`lim-${i}`, true);
+    await memoryVec.markMemoryNeedsReindex(`lim-${i}`, true);
   }
 
-  assert.equal(getReindexPending(), 5, "should have 5 pending before batch");
+  assert.equal(await getReindexPending(), 5, "should have 5 pending before batch");
 
   // Run with limit=3 — since no source/vec, all return as 0 processed
   // but the queue size is checked via getMemoryReindexQueue(3)
@@ -144,7 +144,7 @@ test("runReindexBatch: respects the limit parameter", async () => {
   assert.ok(result.processed + result.errors <= 3, "batch cannot process more than limit items");
 
   // Queue still has items (5 - processed items)
-  const remaining = getReindexPending();
+  const remaining = await getReindexPending();
   assert.ok(remaining >= 5 - result.processed, "remaining queue >= 5 - processed");
 });
 

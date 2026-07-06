@@ -8,7 +8,7 @@
  * Sliced out of #3500 (usage_logs cluster, slice 4).
  */
 
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 // ---------------------------------------------------------------------------
 // Auto-routing analytics
@@ -22,17 +22,15 @@ export interface AutoRoutingTotalResult {
  * Returns the total number of requests routed through auto/ prefix models.
  * Matches model = 'auto' OR model LIKE 'auto/%'.
  */
-export function getAutoRoutingTotalCount(): AutoRoutingTotalResult {
-  const db = getDbInstance();
-  const row = db
-    .prepare(
-      `
+export async function getAutoRoutingTotalCount(): Promise<AutoRoutingTotalResult> {
+  const db = getDbClient();
+  const row = await db.get<AutoRoutingTotalResult>(
+    `
       SELECT COUNT(*) as count
       FROM usage_logs
       WHERE model = 'auto' OR model LIKE 'auto/%'
     `
-    )
-    .get() as AutoRoutingTotalResult | undefined;
+  );
   return row ?? { count: 0 };
 }
 
@@ -48,11 +46,10 @@ export interface AutoRoutingVariantRow {
  *   'auto/X'    → 'X'
  *   other       → 'other' (should not occur given the WHERE clause)
  */
-export function getAutoRoutingVariantBreakdown(): AutoRoutingVariantRow[] {
-  const db = getDbInstance();
-  return db
-    .prepare(
-      `
+export async function getAutoRoutingVariantBreakdown(): Promise<AutoRoutingVariantRow[]> {
+  const db = getDbClient();
+  return db.all<AutoRoutingVariantRow>(
+    `
       SELECT
         CASE
           WHEN model = 'auto' THEN 'default'
@@ -65,8 +62,7 @@ export function getAutoRoutingVariantBreakdown(): AutoRoutingVariantRow[] {
       GROUP BY variant
       ORDER BY count DESC
     `
-    )
-    .all() as AutoRoutingVariantRow[];
+  );
 }
 
 export interface AutoRoutingTopProviderRow {
@@ -77,11 +73,10 @@ export interface AutoRoutingTopProviderRow {
 /**
  * Returns the top 10 providers used for auto/ prefix model requests.
  */
-export function getAutoRoutingTopProviders(): AutoRoutingTopProviderRow[] {
-  const db = getDbInstance();
-  return db
-    .prepare(
-      `
+export async function getAutoRoutingTopProviders(): Promise<AutoRoutingTopProviderRow[]> {
+  const db = getDbClient();
+  return db.all<AutoRoutingTopProviderRow>(
+    `
       SELECT provider, COUNT(*) as count
       FROM usage_logs
       WHERE model = 'auto' OR model LIKE 'auto/%'
@@ -89,6 +84,5 @@ export function getAutoRoutingTopProviders(): AutoRoutingTopProviderRow[] {
       ORDER BY count DESC
       LIMIT 10
       `
-    )
-    .all() as AutoRoutingTopProviderRow[];
+  );
 }

@@ -26,7 +26,7 @@ export async function GET(request: NextRequest) {
     const authError = await requireCloudAgentManagementAuth(request);
     if (authError) return authError;
 
-    const data = listCloudAgentCredentials();
+    const data = await listCloudAgentCredentials();
 
     return NextResponse.json({ data }, { headers: getCloudAgentCorsHeaders(request) });
   } catch (error) {
@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
 
     const { providerId, apiKey, baseUrl } = validation.data;
 
-    saveCloudAgentCredential(providerId, apiKey, baseUrl);
+    await saveCloudAgentCredential(providerId, apiKey, baseUrl);
 
     return NextResponse.json(
       {

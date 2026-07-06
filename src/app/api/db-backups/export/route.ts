@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import path from "path";
 import fs from "fs";
 import os from "os";
-import { getDbInstance, SQLITE_FILE } from "@/lib/db/core";
+import { getDbClient, SQLITE_FILE } from "@/lib/db/core";
 import { isAuthRequired, isAuthenticated } from "@/shared/utils/apiAuth";
 import { sanitizeErrorMessage } from "@omniroute/open-sse/utils/error";
 
@@ -31,7 +31,7 @@ export async function GET(request: Request) {
     const tmpPath = path.join(tmpDir, exportFilename);
 
     // Use native SQLite backup API for a consistent snapshot
-    const db = getDbInstance();
+    const db = getDbClient();
     await db.backup(tmpPath);
 
     const fileBuffer = fs.readFileSync(tmpPath);

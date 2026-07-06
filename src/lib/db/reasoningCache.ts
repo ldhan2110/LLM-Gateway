@@ -9,7 +9,7 @@
  * @see Issue #1628
  */
 
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 // ──────────────── Types ────────────────
 
@@ -74,41 +74,46 @@ const MAX_ENTRY_BYTES = 10000;
  * Store a reasoning_content entry for a given tool_call_id.
  * Uses INSERT OR REPLACE to handle duplicate tool_call_ids gracefully.
  */
-export function setReasoningCache(
+export async function setReasoningCache(
   toolCallId: string,
   provider: string,
   model: string,
   reasoning: string,
   ttlMs: number = DEFAULT_TTL_MS
-): void {
+): Promise<void> {
   if (reasoning.length > MAX_ENTRY_BYTES) {
     reasoning = reasoning.slice(0, MAX_ENTRY_BYTES);
   }
-  const db = getDbInstance();
+  const db = getDbClient();
   const expiresAt = toUnixEpochSeconds(Date.now() + ttlMs);
   const charCount = reasoning.length;
 
-  db.prepare(
+  await db.run(
     `INSERT OR REPLACE INTO reasoning_cache
        (tool_call_id, provider, model, reasoning, char_count, created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, datetime('now'), ?)`
-  ).run(toolCallId, provider, model, reasoning, charCount, expiresAt);
+     VALUES (?, ?, ?, ?, ?, datetime('now'), ?)`,
+    toolCallId,
+    provider,
+    model,
+    reasoning,
+    charCount,
+    expiresAt
+  );
 }
 
 /**
  * Retrieve a cached reasoning_content by tool_call_id.
  * Returns null if not found or expired.
  */
-export function getReasoningCache(
+export async function getReasoningCache(
   toolCallId: string
-): { reasoning: string; provider: string; model: string } | null {
-  const db = getDbInstance();
-  const row = db
-    .prepare(
-      `SELECT reasoning, provider, model FROM reasoning_cache
-       WHERE tool_call_id = ? AND ${EXPIRES_AT_EPOCH_SQL} > unixepoch('now')`
-    )
-    .get(toolCallId) as { reasoning: string; provider: string; model: string } | undefined;
+): Promise<{ reasoning: string; provider: string; model: string } | null> {
+  const db = getDbClient();
+  const row = await db.get<{ reasoning: string; provider: string; model: string }>(
+    `SELECT reasoning, provider, model FROM reasoning_cache
+       WHERE tool_call_id = ? AND ${EXPIRES_AT_EPOCH_SQL} > unixepoch('now')`,
+    toolCallId
+  );
 
   return row ?? null;
 }
@@ -116,20 +121,23 @@ export function getReasoningCache(
 /**
  * Delete a specific reasoning cache entry.
  */
-export function deleteReasoningCache(toolCallId: string): number {
-  const db = getDbInstance();
-  const result = db.prepare(`DELETE FROM reasoning_cache WHERE tool_call_id = ?`).run(toolCallId);
+export async function deleteReasoningCache(toolCallId: string): Promise<number> {
+  const db = getDbClient();
+  const result = await db.run(
+    `DELETE FROM reasoning_cache WHERE tool_call_id = ?`,
+    toolCallId
+  );
   return result.changes;
 }
 
 /**
  * Delete all expired entries. Returns count of rows removed.
  */
-export function cleanupExpiredReasoning(): number {
-  const db = getDbInstance();
-  const result = db
-    .prepare(`DELETE FROM reasoning_cache WHERE ${EXPIRES_AT_EPOCH_SQL} <= unixepoch('now')`)
-    .run();
+export async function cleanupExpiredReasoning(): Promise<number> {
+  const db = getDbClient();
+  const result = await db.run(
+    `DELETE FROM reasoning_cache WHERE ${EXPIRES_AT_EPOCH_SQL} <= unixepoch('now')`
+  );
   return result.changes;
 }
 
@@ -137,13 +145,16 @@ export function cleanupExpiredReasoning(): number {
  * Delete all entries, optionally filtered by provider.
  * Returns count of rows removed.
  */
-export function clearAllReasoningCache(provider?: string): number {
-  const db = getDbInstance();
+export async function clearAllReasoningCache(provider?: string): Promise<number> {
+  const db = getDbClient();
   if (provider) {
-    const result = db.prepare(`DELETE FROM reasoning_cache WHERE provider = ?`).run(provider);
+    const result = await db.run(
+      `DELETE FROM reasoning_cache WHERE provider = ?`,
+      provider
+    );
     return result.changes;
   }
-  const result = db.prepare(`DELETE FROM reasoning_cache`).run();
+  const result = await db.run(`DELETE FROM reasoning_cache`);
   return result.changes;
 }
 
@@ -152,25 +163,21 @@ export function clearAllReasoningCache(provider?: string): number {
 /**
  * Get aggregate statistics for the reasoning cache.
  */
-export function getReasoningCacheStats(): ReasoningCacheStats {
-  const db = getDbInstance();
+export async function getReasoningCacheStats(): Promise<ReasoningCacheStats> {
+  const db = getDbClient();
 
   // Total counts
-  const totals = db
-    .prepare(
-      `SELECT COUNT(*) as total_entries, COALESCE(SUM(char_count), 0) as total_chars
+  const totals = await db.get<{ total_entries: number; total_chars: number }>(
+    `SELECT COUNT(*) as total_entries, COALESCE(SUM(char_count), 0) as total_chars
        FROM reasoning_cache WHERE ${EXPIRES_AT_EPOCH_SQL} > unixepoch('now')`
-    )
-    .get() as { total_entries: number; total_chars: number };
+  );
 
   // By provider
-  const providerRows = db
-    .prepare(
-      `SELECT provider, COUNT(*) as entries, COALESCE(SUM(char_count), 0) as chars
+  const providerRows = await db.all<{ provider: string; entries: number; chars: number }>(
+    `SELECT provider, COUNT(*) as entries, COALESCE(SUM(char_count), 0) as chars
        FROM reasoning_cache WHERE ${EXPIRES_AT_EPOCH_SQL} > unixepoch('now')
        GROUP BY provider ORDER BY entries DESC`
-    )
-    .all() as { provider: string; entries: number; chars: number }[];
+  );
 
   const byProvider: Record<string, { entries: number; chars: number }> = {};
   for (const row of providerRows) {
@@ -178,13 +185,11 @@ export function getReasoningCacheStats(): ReasoningCacheStats {
   }
 
   // By model
-  const modelRows = db
-    .prepare(
-      `SELECT model, COUNT(*) as entries, COALESCE(SUM(char_count), 0) as chars
+  const modelRows = await db.all<{ model: string; entries: number; chars: number }>(
+    `SELECT model, COUNT(*) as entries, COALESCE(SUM(char_count), 0) as chars
        FROM reasoning_cache WHERE ${EXPIRES_AT_EPOCH_SQL} > unixepoch('now')
        GROUP BY model ORDER BY entries DESC`
-    )
-    .all() as { model: string; entries: number; chars: number }[];
+  );
 
   const byModel: Record<string, { entries: number; chars: number }> = {};
   for (const row of modelRows) {
@@ -192,23 +197,19 @@ export function getReasoningCacheStats(): ReasoningCacheStats {
   }
 
   // Oldest/newest
-  const oldest = db
-    .prepare(
-      `SELECT created_at FROM reasoning_cache
+  const oldest = await db.get<{ created_at: string }>(
+    `SELECT created_at FROM reasoning_cache
        WHERE ${EXPIRES_AT_EPOCH_SQL} > unixepoch('now') ORDER BY created_at ASC LIMIT 1`
-    )
-    .get() as { created_at: string } | undefined;
+  );
 
-  const newest = db
-    .prepare(
-      `SELECT created_at FROM reasoning_cache
+  const newest = await db.get<{ created_at: string }>(
+    `SELECT created_at FROM reasoning_cache
        WHERE ${EXPIRES_AT_EPOCH_SQL} > unixepoch('now') ORDER BY created_at DESC LIMIT 1`
-    )
-    .get() as { created_at: string } | undefined;
+  );
 
   return {
-    totalEntries: totals.total_entries,
-    totalChars: totals.total_chars,
+    totalEntries: totals!.total_entries,
+    totalChars: totals!.total_chars,
     byProvider,
     byModel,
     oldestEntry: oldest?.created_at ?? null,
@@ -221,15 +222,15 @@ export function getReasoningCacheStats(): ReasoningCacheStats {
 /**
  * List reasoning cache entries with optional filters and pagination.
  */
-export function getReasoningCacheEntries(
+export async function getReasoningCacheEntries(
   opts: {
     limit?: number;
     offset?: number;
     provider?: string;
     model?: string;
   } = {}
-): ReasoningCacheEntry[] {
-  const db = getDbInstance();
+): Promise<ReasoningCacheEntry[]> {
+  const db = getDbClient();
   const limit = Math.min(opts.limit ?? 50, 200);
   const offset = opts.offset ?? 0;
 
@@ -247,14 +248,7 @@ export function getReasoningCacheEntries(
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-  const rows = db
-    .prepare(
-      `SELECT tool_call_id, provider, model, reasoning, char_count, created_at, expires_at
-       FROM reasoning_cache ${where}
-       ORDER BY created_at DESC
-       LIMIT ? OFFSET ?`
-    )
-    .all(...params, limit, offset) as {
+  const rows = await db.all<{
     tool_call_id: string;
     provider: string;
     model: string;
@@ -262,7 +256,15 @@ export function getReasoningCacheEntries(
     char_count: number;
     created_at: string;
     expires_at: number | string;
-  }[];
+  }>(
+    `SELECT tool_call_id, provider, model, reasoning, char_count, created_at, expires_at
+       FROM reasoning_cache ${where}
+       ORDER BY created_at DESC
+       LIMIT ? OFFSET ?`,
+    ...params,
+    limit,
+    offset
+  );
 
   return rows.map((row) => ({
     toolCallId: row.tool_call_id,

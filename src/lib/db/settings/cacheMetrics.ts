@@ -2,16 +2,20 @@
  * db/settings/cacheMetrics.ts — Cache control metrics (computed from usage_history on-the-fly).
  */
 
-import { getDbInstance } from "../core";
+import { getDbClient } from "../core";
 
 export async function getCacheMetrics() {
-  const db = getDbInstance();
+  const db = getDbClient();
 
   try {
     // Aggregate totals from usage_history
-    const totalsRow = db
-      .prepare(
-        `
+    const totalsRow = await db.get<{
+      totalRequests: number;
+      totalInputTokens: number | null;
+      totalCachedTokens: number | null;
+      totalCacheCreationTokens: number | null;
+    }>(
+      `
       SELECT
         COUNT(*) as totalRequests,
         SUM(tokens_input) as totalInputTokens,
@@ -20,30 +24,26 @@ export async function getCacheMetrics() {
       FROM usage_history
       WHERE tokens_cache_read > 0 OR tokens_cache_creation > 0
     `
-      )
-      .get() as
-      | {
-          totalRequests: number;
-          totalInputTokens: number | null;
-          totalCachedTokens: number | null;
-          totalCacheCreationTokens: number | null;
-        }
-      | undefined;
+    );
 
     // Get all requests count (including those without cache activity)
-    const allRequestsRow = db
-      .prepare(
-        `
+    const allRequestsRow = await db.get<{ totalRequests: number }>(
+      `
       SELECT COUNT(*) as totalRequests
       FROM usage_history
     `
-      )
-      .get() as { totalRequests: number } | undefined;
+    );
 
     // Aggregate by provider
-    const byProviderRows = db
-      .prepare(
-        `
+    const byProviderRows = await db.all<{
+      provider: string;
+      totalRequests: number;
+      cachedRequests: number;
+      inputTokens: number | null;
+      cachedTokens: number | null;
+      cacheCreationTokens: number | null;
+    }>(
+      `
       SELECT
         provider,
         COUNT(*) as totalRequests,
@@ -56,20 +56,17 @@ export async function getCacheMetrics() {
       GROUP BY provider
       HAVING cachedRequests > 0
     `
-      )
-      .all() as Array<{
-      provider: string;
-      totalRequests: number;
-      cachedRequests: number;
+    );
+
+    // Aggregate by combo strategy (direct requests stored as 'direct')
+    const byStrategyRows = await db.all<{
+      strategy: string;
+      requests: number;
       inputTokens: number | null;
       cachedTokens: number | null;
       cacheCreationTokens: number | null;
-    }>;
-
-    // Aggregate by combo strategy (direct requests stored as 'direct')
-    const byStrategyRows = db
-      .prepare(
-        `
+    }>(
+      `
       SELECT
         COALESCE(combo_strategy, 'direct') as strategy,
         COUNT(*) as requests,
@@ -80,14 +77,7 @@ export async function getCacheMetrics() {
       WHERE (tokens_cache_read > 0 OR tokens_cache_creation > 0)
       GROUP BY combo_strategy
     `
-      )
-      .all() as Array<{
-      strategy: string;
-      requests: number;
-      inputTokens: number | null;
-      cachedTokens: number | null;
-      cacheCreationTokens: number | null;
-    }>;
+    );
 
     const tokensSaved = totalsRow?.totalCachedTokens || 0;
 
@@ -184,12 +174,18 @@ export interface CacheTrendPoint {
 }
 
 export async function getCacheTrend(hours = 24): Promise<CacheTrendPoint[]> {
-  const db = getDbInstance();
+  const db = getDbClient();
 
   try {
-    const rows = db
-      .prepare(
-        `
+    const rows = await db.all<{
+      hour: string;
+      requests: number;
+      cachedRequests: number;
+      inputTokens: number | null;
+      cachedTokens: number | null;
+      cacheCreationTokens: number | null;
+    }>(
+      `
         SELECT
           strftime('%Y-%m-%dT%H:00:00Z', timestamp) as hour,
           COUNT(*) as requests,
@@ -201,16 +197,9 @@ export async function getCacheTrend(hours = 24): Promise<CacheTrendPoint[]> {
         WHERE timestamp >= datetime('now', ?)
         GROUP BY hour
         ORDER BY hour ASC
-      `
-      )
-      .all(`-${hours} hours`) as Array<{
-      hour: string;
-      requests: number;
-      cachedRequests: number;
-      inputTokens: number | null;
-      cachedTokens: number | null;
-      cacheCreationTokens: number | null;
-    }>;
+      `,
+      `-${hours} hours`
+    );
 
     return rows.map((r) => ({
       timestamp: r.hour,

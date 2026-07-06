@@ -348,7 +348,7 @@ export async function GET(request: Request) {
 
     // Compute the raw-data cutoff: rows older than this may have been rolled up to
     // daily_usage_summary and deleted from usage_history.
-    const dbSettings = getUserDatabaseSettings();
+    const dbSettings = await getUserDatabaseSettings();
     const rawRetentionDays = dbSettings.aggregation?.rawDataRetentionDays ?? 30;
     const rawCutoff = new Date();
     rawCutoff.setDate(rawCutoff.getDate() - rawRetentionDays);
@@ -411,11 +411,11 @@ export async function GET(request: Request) {
       await import("@/lib/usage/costCalculator");
     const { PROVIDER_ID_TO_ALIAS } = await import("@omniroute/open-sse/config/providerModels");
 
-    const summaryRow = getUsageSummary(unifiedSource, unifiedParams) as Record<string, unknown>;
+    const summaryRow = await getUsageSummary(unifiedSource, unifiedParams) as Record<string, unknown>;
 
-    const dailyRows = getDailyUsage(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
+    const dailyRows = await getDailyUsage(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
 
-    const dailyCostRows = getDailyCostRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
+    const dailyCostRows = await getDailyCostRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
 
     const heatmapStart = new Date();
     heatmapStart.setUTCDate(heatmapStart.getUTCDate() - 364);
@@ -437,30 +437,30 @@ export async function GET(request: Request) {
       });
     }
 
-    const heatmapRows = getHeatmapRows(heatmapConditions, heatmapParams) as Array<Record<string, unknown>>;
+    const heatmapRows = await getHeatmapRows(heatmapConditions, heatmapParams) as Array<Record<string, unknown>>;
 
-    const modelRows = getModelUsageRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
+    const modelRows = await getModelUsageRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
 
-    const providerCostRows = getProviderCostRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
+    const providerCostRows = await getProviderCostRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
 
-    const providerRows = getProviderUsageRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
+    const providerRows = await getProviderUsageRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
 
     const accountCostWhereClause = whereClause
       .replace(/timestamp/g, "usage_history.timestamp")
       .replace(/api_key_/g, "usage_history.api_key_");
-    const accountCostRows = getAccountCostRows(accountCostWhereClause, params) as Array<Record<string, unknown>>;
+    const accountCostRows = await getAccountCostRows(accountCostWhereClause, params) as Array<Record<string, unknown>>;
 
-    const accountRows = getAccountUsageRows(accountCostWhereClause, params) as Array<Record<string, unknown>>;
+    const accountRows = await getAccountUsageRows(accountCostWhereClause, params) as Array<Record<string, unknown>>;
 
     const apiKeyWhereClause = appendWhereCondition(
       whereClause,
       "(api_key_id IS NOT NULL AND api_key_id != '') OR (api_key_name IS NOT NULL AND api_key_name != '')"
     );
-    const apiKeyRows = getApiKeyUsageRows(apiKeyWhereClause, params) as Array<Record<string, unknown>>;
+    const apiKeyRows = await getApiKeyUsageRows(apiKeyWhereClause, params) as Array<Record<string, unknown>>;
 
-    const serviceTierRows = getServiceTierUsageRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
+    const serviceTierRows = await getServiceTierUsageRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
 
-    const apiKeyMetadataRows = getApiKeyMetadataRows(apiKeyWhereClause, params) as Array<Record<string, unknown>>;
+    const apiKeyMetadataRows = await getApiKeyMetadataRows(apiKeyWhereClause, params) as Array<Record<string, unknown>>;
 
     const apiKeyMetadata = new Map<string, { latestName: string; aliases: Set<string> }>();
     for (const row of apiKeyMetadataRows) {
@@ -477,9 +477,32 @@ export async function GET(request: Request) {
       apiKeyMetadata.set(groupKey, existing);
     }
 
-    const weeklyRows = getWeeklyPatternRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
+    const weeklyRows = await getWeeklyPatternRows(unifiedSource, unifiedParams) as Array<Record<string, unknown>>;
 
-    const fallbackRow = getFallbackStats(whereClause, params) as Record<string, unknown>;
+    // Build positional WHERE clause for getFallbackStats (async, positional params)
+    const fallbackConditions: string[] = [];
+    const fallbackParams: string[] = [];
+    if (sinceIso) {
+      fallbackConditions.push("timestamp >= ?");
+      fallbackParams.push(sinceIso);
+    }
+    if (untilIso) {
+      fallbackConditions.push("timestamp <= ?");
+      fallbackParams.push(untilIso);
+    }
+    if (apiKeyIds.length > 0) {
+      const placeholders = apiKeyIds.map(() => "?").join(",");
+      fallbackConditions.push(
+        `(api_key_name IN (${placeholders}) OR api_key_id IN (${placeholders}))`
+      );
+      fallbackParams.push(...apiKeyIds, ...apiKeyIds);
+    }
+    const fallbackWhereClause =
+      fallbackConditions.length > 0 ? `WHERE ${fallbackConditions.join(" AND ")}` : "";
+    const fallbackRow = (await getFallbackStats(
+      fallbackWhereClause,
+      fallbackParams
+    )) as Record<string, unknown>;
 
     const summary = {
       totalRequests: Number(summaryRow?.totalRequests || 0),
@@ -906,7 +929,7 @@ export async function GET(request: Request) {
             apiKeyParams: apiKeyParamEntries,
           });
 
-        const presetModelRows = getPresetCostModelRows(presetUnifiedSource, presetParams) as Array<Record<string, unknown>>;
+        const presetModelRows = await getPresetCostModelRows(presetUnifiedSource, presetParams) as Array<Record<string, unknown>>;
 
         let presetTotalCost = 0;
         for (const row of presetModelRows) {

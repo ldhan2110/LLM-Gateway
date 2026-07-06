@@ -68,6 +68,8 @@ export function storeSemanticCacheResponse(
     args.apiKeyId ?? undefined
   );
   const tokensSaved = args.usage?.prompt_tokens + args.usage?.completion_tokens || 0;
-  deps.setCachedResponse(signature, args.model, args.translatedResponse, tokensSaved);
+  Promise.resolve(
+    deps.setCachedResponse(signature, args.model, args.translatedResponse, tokensSaved)
+  ).catch(() => {});
   args.log?.debug?.("CACHE", `Stored response for ${args.model} (${tokensSaved} tokens)`);
 }

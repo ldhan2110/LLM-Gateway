@@ -43,7 +43,7 @@ export async function GET(request: Request) {
   if (authError) return authError;
 
   try {
-    const webhooks = getWebhooks();
+    const webhooks = await getWebhooks();
     // Mask secrets in listing
     const masked = webhooks.map((w) => ({
       ...w,
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
     }
 
     const metadataEncrypted = data.metadata ? encryptMetadata(data.metadata) : undefined;
-    const webhook = createWebhook({
+    const webhook = await createWebhook({
       url: data.url,
       events: data.events,
       secret: data.secret,

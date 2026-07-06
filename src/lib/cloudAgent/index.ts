@@ -5,4 +5,6 @@ export * from "./db.ts";
 
 import { createCloudAgentTaskTable } from "./db.ts";
 
-createCloudAgentTaskTable();
+createCloudAgentTaskTable().catch((err) => {
+  console.warn("[cloudAgent] Failed to initialize task table:", err?.message);
+});

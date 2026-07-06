@@ -34,7 +34,7 @@ export async function GET(request: NextRequest) {
   }
 
   const { category, limit } = parsed.data;
-  const rankings = computeFreeProviderRankings(category, limit);
+  const rankings = await computeFreeProviderRankings(category, limit);
 
   return NextResponse.json({ rankings }, { headers: CORS_HEADERS });
 }

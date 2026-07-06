@@ -1,4 +1,4 @@
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 import type { TierConfig } from "../../../open-sse/services/tierTypes";
 import { validateTierConfig, DEFAULT_TIER_CONFIG } from "../../../open-sse/services/tierConfig";
 import { defaultLogger as log } from "@omniroute/open-sse/utils/logger";
@@ -6,9 +6,9 @@ import { defaultLogger as log } from "@omniroute/open-sse/utils/logger";
 const TABLE = "tier_config";
 const CORRUPTED_VALUE_PREVIEW_LEN = 200;
 
-export function initTierConfigTable(): void {
-  const db = getDbInstance();
-  db.exec(`
+export async function initTierConfigTable(): Promise<void> {
+  const db = getDbClient();
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS ${TABLE} (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
@@ -17,12 +17,13 @@ export function initTierConfigTable(): void {
   `);
 }
 
-export function saveTierConfig(config: TierConfig): void {
-  const db = getDbInstance();
+export async function saveTierConfig(config: TierConfig): Promise<void> {
+  const db = getDbClient();
   const serialized = JSON.stringify(config);
-  db.prepare(
-    `INSERT OR REPLACE INTO ${TABLE} (key, value, updated_at) VALUES ('tier_config', ?, datetime('now'))`
-  ).run(serialized);
+  await db.run(
+    `INSERT OR REPLACE INTO ${TABLE} (key, value, updated_at) VALUES ('tier_config', ?, datetime('now'))`,
+    serialized
+  );
 }
 
 /**
@@ -50,11 +51,11 @@ function previewCorruptedValue(value: unknown): string {
  * The caller (`loadTierConfig()`) then falls back to `DEFAULT_TIER_CONFIG`,
  * so a corrupted row never silently feeds invalid pricing into the router.
  */
-export function loadTierConfigFromDb(): TierConfig | null {
-  const db = getDbInstance();
-  const row = db.prepare(`SELECT value FROM ${TABLE} WHERE key = 'tier_config'`).get() as
-    | { value: string }
-    | undefined;
+export async function loadTierConfigFromDb(): Promise<TierConfig | null> {
+  const db = getDbClient();
+  const row = await db.get<{ value: string }>(
+    `SELECT value FROM ${TABLE} WHERE key = 'tier_config'`
+  );
   if (!row) return null;
 
   const raw = row.value;
@@ -83,6 +84,6 @@ export function loadTierConfigFromDb(): TierConfig | null {
   }
 }
 
-export function loadTierConfig(): TierConfig {
-  return loadTierConfigFromDb() || DEFAULT_TIER_CONFIG;
+export async function loadTierConfig(): Promise<TierConfig> {
+  return (await loadTierConfigFromDb()) || DEFAULT_TIER_CONFIG;
 }

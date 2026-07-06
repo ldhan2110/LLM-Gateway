@@ -32,10 +32,10 @@ export async function POST(request: Request) {
 
   try {
     if (force) {
-      markAllMemoriesNeedReindex();
+      await markAllMemoriesNeedReindex();
     }
 
-    const pending = getReindexPending();
+    const pending = await getReindexPending();
 
     // Dispatch batch in background — do NOT await (returns immediate response).
     setImmediate(() => {

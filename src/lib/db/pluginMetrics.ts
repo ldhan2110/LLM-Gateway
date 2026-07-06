@@ -12,7 +12,7 @@
  * @module db/pluginMetrics
  */
 
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 export interface PluginMetricRow {
   pluginName: string;
@@ -37,25 +37,30 @@ function rowToMetric(row: Record<string, unknown>): PluginMetricRow {
 /**
  * Record a hook execution metric. Uses UPSERT to increment counters.
  */
-export function recordPluginMetric(
+export async function recordPluginMetric(
   pluginName: string,
   event: string,
   durationMs: number,
   isError: boolean
-): void {
+): Promise<void> {
   try {
-    const db = getDbInstance();
+    const db = getDbClient();
     const now = new Date().toISOString();
 
-    db.prepare(
+    await db.run(
       `INSERT INTO plugin_metrics (plugin_name, event, calls, errors, total_duration_ms, last_called_at)
        VALUES (?, ?, 1, ?, ?, ?)
        ON CONFLICT(plugin_name, event) DO UPDATE SET
          calls = calls + 1,
          errors = errors + excluded.errors,
          total_duration_ms = total_duration_ms + excluded.total_duration_ms,
-         last_called_at = excluded.last_called_at`
-    ).run(pluginName, event, isError ? 1 : 0, durationMs, now);
+         last_called_at = excluded.last_called_at`,
+      pluginName,
+      event,
+      isError ? 1 : 0,
+      durationMs,
+      now
+    );
   } catch {
     // Best-effort: DB hiccup should never break hook execution
   }
@@ -64,12 +69,12 @@ export function recordPluginMetric(
 /**
  * Get plugin metrics, optionally filtered by plugin name.
  */
-export function getPluginMetrics(pluginName?: string): PluginMetricRow[] {
+export async function getPluginMetrics(pluginName?: string): Promise<PluginMetricRow[]> {
   try {
-    const db = getDbInstance();
+    const db = getDbClient();
     const rows = pluginName
-      ? db.prepare("SELECT * FROM plugin_metrics WHERE plugin_name = ? ORDER BY event").all(pluginName)
-      : db.prepare("SELECT * FROM plugin_metrics ORDER BY plugin_name, event").all();
+      ? await db.all("SELECT * FROM plugin_metrics WHERE plugin_name = ? ORDER BY event", pluginName)
+      : await db.all("SELECT * FROM plugin_metrics ORDER BY plugin_name, event");
     return (rows as Record<string, unknown>[]).map(rowToMetric);
   } catch {
     return [];
@@ -79,10 +84,10 @@ export function getPluginMetrics(pluginName?: string): PluginMetricRow[] {
 /**
  * Clear plugin metrics, optionally filtered by plugin name.
  */
-export function clearPluginMetrics(pluginName?: string): number {
-  const db = getDbInstance();
+export async function clearPluginMetrics(pluginName?: string): Promise<number> {
+  const db = getDbClient();
   const result = pluginName
-    ? db.prepare("DELETE FROM plugin_metrics WHERE plugin_name = ?").run(pluginName)
-    : db.prepare("DELETE FROM plugin_metrics").run();
+    ? await db.run("DELETE FROM plugin_metrics WHERE plugin_name = ?", pluginName)
+    : await db.run("DELETE FROM plugin_metrics");
   return result.changes;
 }

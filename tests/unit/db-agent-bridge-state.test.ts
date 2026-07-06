@@ -51,14 +51,14 @@ test("migration is idempotent — running getDbInstance twice does not throw", (
   assert.ok(db2);
 });
 
-test("getAgentBridgeState returns null for unknown agent", () => {
-  const result = mod.getAgentBridgeState("unknown-agent");
+test("getAgentBridgeState returns null for unknown agent", async () => {
+  const result = await mod.getAgentBridgeState("unknown-agent");
   assert.equal(result, null);
 });
 
-test("upsertAgentBridgeState creates a new row with defaults", () => {
-  mod.upsertAgentBridgeState({ agent_id: "copilot" });
-  const row = mod.getAgentBridgeState("copilot");
+test("upsertAgentBridgeState creates a new row with defaults", async () => {
+  await mod.upsertAgentBridgeState({ agent_id: "copilot" });
+  const row = await mod.getAgentBridgeState("copilot");
 
   assert.ok(row);
   assert.equal(row.agent_id, "copilot");
@@ -69,43 +69,43 @@ test("upsertAgentBridgeState creates a new row with defaults", () => {
   assert.equal(row.last_error, null);
 });
 
-test("upsertAgentBridgeState updates an existing row", () => {
-  mod.upsertAgentBridgeState({ agent_id: "cursor" });
-  mod.upsertAgentBridgeState({ agent_id: "cursor", dns_enabled: true, cert_trusted: true });
+test("upsertAgentBridgeState updates an existing row", async () => {
+  await mod.upsertAgentBridgeState({ agent_id: "cursor" });
+  await mod.upsertAgentBridgeState({ agent_id: "cursor", dns_enabled: true, cert_trusted: true });
 
-  const row = mod.getAgentBridgeState("cursor");
+  const row = await mod.getAgentBridgeState("cursor");
   assert.ok(row);
   assert.equal(row.dns_enabled, true);
   assert.equal(row.cert_trusted, true);
   assert.equal(row.setup_completed, false);
 });
 
-test("setLastStarted persists timestamp and auto-creates row if missing", () => {
+test("setLastStarted persists timestamp and auto-creates row if missing", async () => {
   const ts = new Date().toISOString();
-  mod.setLastStarted("kiro", ts);
+  await mod.setLastStarted("kiro", ts);
 
-  const row = mod.getAgentBridgeState("kiro");
+  const row = await mod.getAgentBridgeState("kiro");
   assert.ok(row);
   assert.equal(row.last_started_at, ts);
 });
 
-test("setLastError persists error string and clears it with null", () => {
-  mod.upsertAgentBridgeState({ agent_id: "codex" });
-  mod.setLastError("codex", "upstream timeout");
+test("setLastError persists error string and clears it with null", async () => {
+  await mod.upsertAgentBridgeState({ agent_id: "codex" });
+  await mod.setLastError("codex", "upstream timeout");
 
-  let row = mod.getAgentBridgeState("codex");
+  let row = await mod.getAgentBridgeState("codex");
   assert.equal(row?.last_error, "upstream timeout");
 
-  mod.setLastError("codex", null);
-  row = mod.getAgentBridgeState("codex");
+  await mod.setLastError("codex", null);
+  row = await mod.getAgentBridgeState("codex");
   assert.equal(row?.last_error, null);
 });
 
-test("getAllAgentBridgeStates returns all rows", () => {
-  mod.upsertAgentBridgeState({ agent_id: "antigravity" });
-  mod.upsertAgentBridgeState({ agent_id: "zed" });
+test("getAllAgentBridgeStates returns all rows", async () => {
+  await mod.upsertAgentBridgeState({ agent_id: "antigravity" });
+  await mod.upsertAgentBridgeState({ agent_id: "zed" });
 
-  const rows = mod.getAllAgentBridgeStates();
+  const rows = await mod.getAllAgentBridgeStates();
   assert.ok(rows.length >= 2);
   const ids = rows.map((r) => r.agent_id);
   assert.ok(ids.includes("antigravity"));

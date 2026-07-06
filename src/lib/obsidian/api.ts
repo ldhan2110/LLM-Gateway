@@ -1,4 +1,4 @@
-import { getDbInstance } from "@/lib/db/core";
+import { getDbClient } from "@/lib/db/core";
 
 const DEFAULT_OBSIDIAN_BASE_URL = "http://127.0.0.1:27123";
 const MAX_RETRIES = 2;
@@ -311,26 +311,31 @@ export type ObsidianClient = ReturnType<typeof createObsidianClient>;
 const DEFAULT_SYNC_SERVER_URL = "http://127.0.0.1:27781";
 const SYNC_TOKEN_KEY = "omniroute_sync_token";
 
-export function getSyncToken(): string | null {
+export async function getSyncToken(): Promise<string | null> {
   try {
-    const db = getDbInstance();
-    const row = db.prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?").get("sync", SYNC_TOKEN_KEY) as { value?: string } | undefined;
+    const db = getDbClient();
+    const row = await db.get<{ value?: string }>(
+      "SELECT value FROM key_value WHERE namespace = ? AND key = ?",
+      "sync", SYNC_TOKEN_KEY
+    );
     return typeof row?.value === "string" ? JSON.parse(row.value) : null;
   } catch { return null; }
 }
 
-export function setSyncToken(token: string | null): void {
+export async function setSyncToken(token: string | null): Promise<void> {
   try {
-    const db = getDbInstance();
+    const db = getDbClient();
     if (token === null) {
-      db.prepare("DELETE FROM key_value WHERE namespace = ? AND key = ?").run("sync", SYNC_TOKEN_KEY);
+      await db.run(
+        "DELETE FROM key_value WHERE namespace = ? AND key = ?",
+        "sync", SYNC_TOKEN_KEY
+      );
     } else {
-      const existing = db.prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?").get("sync", SYNC_TOKEN_KEY);
-      if (existing) {
-        db.prepare("UPDATE key_value SET value = ? WHERE namespace = ? AND key = ?").run(JSON.stringify(token), "sync", SYNC_TOKEN_KEY);
-      } else {
-        db.prepare("INSERT INTO key_value (namespace, key, value) VALUES (?, ?, ?)").run("sync", SYNC_TOKEN_KEY, JSON.stringify(token));
-      }
+      await db.run(
+        `INSERT INTO key_value (namespace, key, value) VALUES (?, ?, ?)
+         ON CONFLICT(namespace, key) DO UPDATE SET value = excluded.value`,
+        "sync", SYNC_TOKEN_KEY, JSON.stringify(token)
+      );
     }
   } catch { /* ignore */ }
 }

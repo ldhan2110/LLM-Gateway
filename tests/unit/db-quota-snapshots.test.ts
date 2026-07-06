@@ -25,8 +25,8 @@ test.after(() => {
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });
 
-test("quotaSnapshots save and query rows with provider and connection filters", () => {
-  quotaSnapshotsDb.saveQuotaSnapshot({
+test("quotaSnapshots save and query rows with provider and connection filters", async () => {
+  await quotaSnapshotsDb.saveQuotaSnapshot({
     provider: "openai",
     connection_id: "conn-1",
     window_key: "hourly",
@@ -36,7 +36,7 @@ test("quotaSnapshots save and query rows with provider and connection filters", 
     window_duration_ms: 3600000,
     raw_data: JSON.stringify({ source: "first" }),
   });
-  quotaSnapshotsDb.saveQuotaSnapshot({
+  await quotaSnapshotsDb.saveQuotaSnapshot({
     provider: "anthropic",
     connection_id: "conn-2",
     window_key: "daily",
@@ -47,7 +47,7 @@ test("quotaSnapshots save and query rows with provider and connection filters", 
     raw_data: JSON.stringify({ source: "second" }),
   });
 
-  const openaiRows = quotaSnapshotsDb.getQuotaSnapshots({
+  const openaiRows = await quotaSnapshotsDb.getQuotaSnapshots({
     provider: "openai",
     connectionId: "conn-1",
     since: "2000-01-01T00:00:00.000Z",
@@ -58,8 +58,8 @@ test("quotaSnapshots save and query rows with provider and connection filters", 
   assert.equal(openaiRows[0].connectionId, "conn-1");
 });
 
-test("quotaSnapshots aggregates by provider or connection and rejects invalid buckets", () => {
-  quotaSnapshotsDb.saveQuotaSnapshot({
+test("quotaSnapshots aggregates by provider or connection and rejects invalid buckets", async () => {
+  await quotaSnapshotsDb.saveQuotaSnapshot({
     provider: "openai",
     connection_id: "conn-a",
     window_key: "hourly",
@@ -69,7 +69,7 @@ test("quotaSnapshots aggregates by provider or connection and rejects invalid bu
     window_duration_ms: 3600000,
     raw_data: "{}",
   });
-  quotaSnapshotsDb.saveQuotaSnapshot({
+  await quotaSnapshotsDb.saveQuotaSnapshot({
     provider: "openai",
     connection_id: "conn-a",
     window_key: "hourly",
@@ -80,12 +80,12 @@ test("quotaSnapshots aggregates by provider or connection and rejects invalid bu
     raw_data: "{}",
   });
 
-  const providerAgg = quotaSnapshotsDb.getAggregatedSnapshots({
+  const providerAgg = await quotaSnapshotsDb.getAggregatedSnapshots({
     provider: "openai",
     since: "2000-01-01T00:00:00.000Z",
     bucketMinutes: 60,
   });
-  const connectionAgg = quotaSnapshotsDb.getAggregatedSnapshots({
+  const connectionAgg = await quotaSnapshotsDb.getAggregatedSnapshots({
     since: "2000-01-01T00:00:00.000Z",
     bucketMinutes: 60,
     aggregateBy: "connection",
@@ -95,8 +95,8 @@ test("quotaSnapshots aggregates by provider or connection and rejects invalid bu
   assert.equal(providerAgg[0].remainingPct, 60);
   assert.equal(connectionAgg[0].provider, "openai:conn-a");
 
-  assert.throws(
-    () =>
+  await assert.rejects(
+    async () =>
       quotaSnapshotsDb.getAggregatedSnapshots({
         since: "2000-01-01T00:00:00.000Z",
         bucketMinutes: 0,
@@ -105,7 +105,7 @@ test("quotaSnapshots aggregates by provider or connection and rejects invalid bu
   );
 });
 
-test("quotaSnapshots cleanup removes old rows and throttles repeated execution", () => {
+test("quotaSnapshots cleanup removes old rows and throttles repeated execution", async () => {
   const db = coreDb.getDbInstance();
   db.prepare(
     `
@@ -125,8 +125,8 @@ test("quotaSnapshots cleanup removes old rows and throttles repeated execution",
     "2000-01-01T00:00:00.000Z"
   );
 
-  const deleted = quotaSnapshotsDb.cleanupOldSnapshots(1);
-  const throttled = quotaSnapshotsDb.cleanupOldSnapshots(1);
+  const deleted = await quotaSnapshotsDb.cleanupOldSnapshots(1);
+  const throttled = await quotaSnapshotsDb.cleanupOldSnapshots(1);
 
   assert.equal(deleted, 1);
   assert.equal(throttled, 0);

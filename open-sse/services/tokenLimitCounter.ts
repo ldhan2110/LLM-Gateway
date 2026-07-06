@@ -12,7 +12,7 @@
  * @module services/tokenLimitCounter
  */
 
-import { getDbInstance } from "../../src/lib/db/core.ts";
+import { getDbClient } from "../../src/lib/db/core.ts";
 import {
   resetWindowIfElapsed,
   getWindowUsage,
@@ -42,10 +42,10 @@ const CACHE_TTL_MS = 5_000;
  *
  * Returns the windowed total (>= 0). DB-authoritative point-in-time read.
  */
-export function seedWindowUsageFromHistory(limit: TokenLimit, now = Date.now()): number {
+export async function seedWindowUsageFromHistory(limit: TokenLimit, now = Date.now()): Promise<number> {
   const { periodStartAt } = resetWindowIfElapsed(limit, now);
   const lowerBound = new Date(periodStartAt).toISOString();
-  const db = getDbInstance();
+  const db = getDbClient();
 
   // Canonical billable total = input + output + reasoning. tokens_cache_read and
   // tokens_cache_creation are a BREAKDOWN already inside tokens_input (see migration
@@ -58,26 +58,23 @@ export function seedWindowUsageFromHistory(limit: TokenLimit, now = Date.now()):
 
   let row: unknown;
   if (limit.scopeType === "model") {
-    row = db
-      .prepare(
-        `SELECT ${tokenSum} FROM usage_history
-         WHERE api_key_id = ? AND model = ? AND timestamp >= ?`
-      )
-      .get(limit.apiKeyId, limit.scopeValue, lowerBound);
+    row = await db.get(
+      `SELECT ${tokenSum} FROM usage_history
+       WHERE api_key_id = ? AND model = ? AND timestamp >= ?`,
+      limit.apiKeyId, limit.scopeValue, lowerBound
+    );
   } else if (limit.scopeType === "provider") {
-    row = db
-      .prepare(
-        `SELECT ${tokenSum} FROM usage_history
-         WHERE api_key_id = ? AND provider = ? AND timestamp >= ?`
-      )
-      .get(limit.apiKeyId, limit.scopeValue, lowerBound);
+    row = await db.get(
+      `SELECT ${tokenSum} FROM usage_history
+       WHERE api_key_id = ? AND provider = ? AND timestamp >= ?`,
+      limit.apiKeyId, limit.scopeValue, lowerBound
+    );
   } else {
-    row = db
-      .prepare(
-        `SELECT ${tokenSum} FROM usage_history
-         WHERE api_key_id = ? AND timestamp >= ?`
-      )
-      .get(limit.apiKeyId, lowerBound);
+    row = await db.get(
+      `SELECT ${tokenSum} FROM usage_history
+       WHERE api_key_id = ? AND timestamp >= ?`,
+      limit.apiKeyId, lowerBound
+    );
   }
 
   const total = row && typeof row === "object" ? (row as { total?: unknown }).total : 0;
@@ -92,11 +89,11 @@ export function seedWindowUsageFromHistory(limit: TokenLimit, now = Date.now()):
  *
  * `forceFresh` bypasses the cache (used by the authoritative enforcement read).
  */
-export function getCurrentWindowUsage(
+export async function getCurrentWindowUsage(
   limit: TokenLimit,
   now = Date.now(),
   forceFresh = false
-): number {
+): Promise<number> {
   const { windowStart } = resetWindowIfElapsed(limit, now);
   const cached = cache.get(limit.id);
 
@@ -110,18 +107,18 @@ export function getCurrentWindowUsage(
   }
 
   // DB point-read (authoritative for the window).
-  let dbUsage = getWindowUsage(limit, now);
+  let dbUsage = await getWindowUsage(limit, now);
 
   // Cold window: no counter row yet → seed from usage_history and PERSIST the
   // seed to the counter row so a subsequent recordTokenUsage increment does not
   // forget the existing historical usage in this window (force-fresh read then
   // first record must accumulate on top of history, not restart from 0).
   if (dbUsage === 0 && (!cached || cached.windowStart !== windowStart)) {
-    const seeded = seedWindowUsageFromHistory(limit, now);
+    const seeded = await seedWindowUsageFromHistory(limit, now);
     if (seeded > 0) {
       // UPSERT creates the row at `seeded`; safe because there is no row yet
       // (dbUsage === 0). Returns the new authoritative total.
-      dbUsage = incrementWindowTokens(limit.id, windowStart, seeded);
+      dbUsage = await incrementWindowTokens(limit.id, windowStart, seeded);
     }
   }
 
@@ -137,10 +134,14 @@ export function getCurrentWindowUsage(
  * the DB increment inside their own transaction; this helper is the simple
  * write-through used outside a transaction.
  */
-export function addWindowTokens(limit: TokenLimit, tokens: number, now = Date.now()): number {
+export async function addWindowTokens(
+  limit: TokenLimit,
+  tokens: number,
+  now = Date.now()
+): Promise<number> {
   const { windowStart } = resetWindowIfElapsed(limit, now);
   const delta = tokens > 0 ? Math.floor(tokens) : 0;
-  const newTotal = incrementWindowTokens(limit.id, windowStart, delta);
+  const newTotal = await incrementWindowTokens(limit.id, windowStart, delta);
   cache.set(limit.id, { windowStart, tokensUsed: newTotal, syncedAt: now });
   return newTotal;
 }
@@ -189,15 +190,15 @@ export interface TokenLimitBreach {
  * @param provider  resolved upstream provider id (optional; "" matches no provider scope)
  * @param model     resolved model id (optional; "" matches no model scope)
  */
-export function checkTokenLimits(
+export async function checkTokenLimits(
   apiKeyId: string,
   provider = "",
   model = "",
   now = Date.now()
-): TokenLimitBreach | null {
+): Promise<TokenLimitBreach | null> {
   if (!apiKeyId) return null;
 
-  const limits = getTokenLimitsForRequest(apiKeyId, provider, model);
+  const limits = await getTokenLimitsForRequest(apiKeyId, provider, model);
   if (!limits || limits.length === 0) return null;
 
   let worst: TokenLimitBreach | null = null;
@@ -208,7 +209,7 @@ export function checkTokenLimits(
     if (!Number.isFinite(limitValue) || limitValue <= 0) continue;
 
     // Authoritative read (bypass the in-memory accelerator).
-    const tokensUsed = getCurrentWindowUsage(limit, now, true);
+    const tokensUsed = await getCurrentWindowUsage(limit, now, true);
     if (tokensUsed < limitValue) continue; // within budget
 
     const { windowStart, nextResetAt } = resetWindowIfElapsed(limit, now);
@@ -241,9 +242,9 @@ export function checkTokenLimits(
  * Record token consumption against every applicable token limit for a request.
  *
  * FIRE-AND-FORGET: scheduled on a microtask so it NEVER blocks the SSE stream.
- * The DB work runs inside a synchronous better-sqlite3 transaction so the
- * reset-detection + reset-log + atomic increment for all matching limits commit
- * atomically. The in-memory cache is updated to the new authoritative totals.
+ * The DB work runs inside an async transaction so the reset-detection + reset-log
+ * + atomic increment for all matching limits commit atomically. The in-memory
+ * cache is updated to the new authoritative totals.
  *
  * A rollover (window reset) is detected when the current window has no counter
  * row yet but a prior window row for the same limit still holds usage; in that
@@ -266,73 +267,79 @@ export function recordTokenUsage(
 
   // Schedule off the hot path; never await, never block the stream.
   Promise.resolve()
-    .then(() => {
+    .then(async () => {
       const now = Date.now();
-      const limits = getTokenLimitsForRequest(apiKeyId, provider || "", model || "");
+      const limits = await getTokenLimitsForRequest(apiKeyId, provider || "", model || "");
       if (!limits || limits.length === 0) return;
 
-      const db = getDbInstance();
+      const db = getDbClient();
       const applied: Array<{ limitId: string; windowStart: string; total: number }> = [];
 
-      const tx = db.transaction(() => {
-        for (const limit of limits) {
-          if (limit.enabled === false) continue;
+      try {
+        await db.transaction(async (c) => {
+          for (const limit of limits) {
+            if (limit.enabled === false) continue;
 
-          const { windowStart } = resetWindowIfElapsed(limit, now);
+            const { windowStart } = resetWindowIfElapsed(limit, now);
 
-          const currentRow = db
-            .prepare(
-              "SELECT tokens_used FROM api_key_token_counters WHERE limit_id = ? AND window_start = ?"
-            )
-            .get(limit.id, windowStart) as { tokens_used?: number } | undefined;
+            const currentRow = await c.get<{ tokens_used?: number }>(
+              "SELECT tokens_used FROM api_key_token_counters WHERE limit_id = ? AND window_start = ?",
+              limit.id, windowStart
+            );
 
-          // First write to a new window? Detect rollover from the prior window.
-          if (!currentRow) {
-            const priorRow = db
-              .prepare(
+            // First write to a new window? Detect rollover from the prior window.
+            if (!currentRow) {
+              const priorRow = await c.get<{ window_start?: string; tokens_used?: number }>(
                 `SELECT window_start, tokens_used FROM api_key_token_counters
                  WHERE limit_id = ? AND window_start < ?
-                 ORDER BY window_start DESC LIMIT 1`
-              )
-              .get(limit.id, windowStart) as
-              | { window_start?: string; tokens_used?: number }
-              | undefined;
-            const prevTokens =
-              priorRow && typeof priorRow.tokens_used === "number" ? priorRow.tokens_used : 0;
-            if (prevTokens > 0) {
-              logTokenLimitReset(limit.id, prevTokens, windowStart);
+                 ORDER BY window_start DESC LIMIT 1`,
+                limit.id, windowStart
+              );
+              const prevTokens =
+                priorRow && typeof priorRow.tokens_used === "number" ? priorRow.tokens_used : 0;
+              if (prevTokens > 0) {
+                await c.run(
+                  `INSERT INTO api_key_token_limit_reset_logs (limit_id, reset_at, prev_tokens, window_start)
+                   VALUES (?, datetime('now'), ?, ?)`,
+                  limit.id, Math.max(0, prevTokens), windowStart
+                );
+              }
+
+              // Cold window with no counter row: seed from usage_history so the
+              // running total reflects prior usage already recorded in this window
+              // before applying the new delta. Mirrors getCurrentWindowUsage seed-on-miss.
+              const seeded = await seedWindowUsageFromHistory(limit, now);
+              if (seeded > 0) {
+                await c.run(
+                  `INSERT INTO api_key_token_counters (limit_id, window_start, tokens_used, updated_at)
+                   VALUES (?, ?, ?, datetime('now'))
+                   ON CONFLICT(limit_id, window_start)
+                   DO UPDATE SET tokens_used = tokens_used + excluded.tokens_used,
+                                 updated_at  = datetime('now')`,
+                  limit.id, windowStart, seeded
+                );
+              }
             }
 
-            // Cold window with no counter row: seed from usage_history so the
-            // running total reflects prior usage already recorded in this window
-            // before applying the new delta. Synchronous (better-sqlite3) — safe
-            // inside this transaction. Mirrors getCurrentWindowUsage seed-on-miss.
-            const seeded = seedWindowUsageFromHistory(limit, now);
-            if (seeded > 0) {
-              incrementWindowTokens(limit.id, windowStart, seeded);
-            }
+            const row = await c.get<{ tokens_used?: number }>(
+              `INSERT INTO api_key_token_counters (limit_id, window_start, tokens_used, updated_at)
+               VALUES (?, ?, ?, datetime('now'))
+               ON CONFLICT(limit_id, window_start)
+               DO UPDATE SET tokens_used = tokens_used + excluded.tokens_used,
+                             updated_at  = datetime('now')
+               RETURNING tokens_used`,
+              limit.id, windowStart, delta
+            );
+            const total =
+              row && typeof row.tokens_used === "number" ? row.tokens_used : delta;
+            applied.push({ limitId: limit.id, windowStart, total });
           }
-
-          const total = incrementWindowTokens(limit.id, windowStart, delta);
-          applied.push({ limitId: limit.id, windowStart, total });
-        }
-      });
-
-      try {
-        tx();
+        });
         // Update the read accelerator to the new authoritative totals.
         for (const a of applied) {
           syncCache(a.limitId, a.windowStart, a.total);
         }
-      } catch (err) {
-        // better-sqlite3 auto-rolls-back on throw; verify we are not stuck mid-txn.
-        if (db.inTransaction) {
-          try {
-            db.exec("ROLLBACK");
-          } catch {
-            // already rolled back
-          }
-        }
+      } catch {
         // Swallow — usage recording must never surface to the request path.
       }
     })

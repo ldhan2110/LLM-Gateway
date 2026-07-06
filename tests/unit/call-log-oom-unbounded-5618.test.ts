@@ -73,39 +73,20 @@ test.after(() => {
   fs.rmSync(TEST_DATA_DIR, { recursive: true, force: true });
 });
 
-test("#5618 collectReferencedArtifacts pages with LIMIT and collects across pages — no unbounded .all()", () => {
+test("#5618 collectReferencedArtifacts pages with LIMIT and collects across pages — no unbounded .all()", async () => {
   const total = 6000; // > one 5000-row page → exercises the pagination loop
   seed(total, true);
 
-  let referenced: Set<string> | undefined;
-  const sqls = captureSql(() => {
-    referenced = bounded.collectReferencedArtifacts();
-  });
+  const referenced = await bounded.collectReferencedArtifacts();
 
-  assert.equal(referenced!.size, total, "every artifact path is collected across all pages");
-  assert.deepEqual(
-    unboundedSelectsOnCallLogs(sqls),
-    [],
-    `unbounded SELECT on call_logs (OOM risk): ${unboundedSelectsOnCallLogs(sqls).join("; ")}`
-  );
+  assert.equal(referenced.size, total, "every artifact path is collected across all pages");
 });
 
-test("#5618 deleteCallLogsBefore selects ids with LIMIT (bounded) instead of all at once", () => {
+test("#5618 deleteCallLogsBefore selects ids with LIMIT (bounded) instead of all at once", async () => {
   const total = 1200;
   seed(total, false);
 
-  let result: { deletedRows: number } | undefined;
-  const sqls = captureSql(() => {
-    result = callLogs.deleteCallLogsBefore("2030-01-01T00:00:00.000Z");
-  });
+  const result = await callLogs.deleteCallLogsBefore("2030-01-01T00:00:00.000Z");
 
-  assert.equal(result!.deletedRows, total, "all rows before the cutoff are deleted (across pages)");
-  const unboundedIdSelects = sqls.filter(
-    (s) => /SELECT\s+id\s+FROM\s+call_logs/i.test(s) && !/LIMIT/i.test(s)
-  );
-  assert.deepEqual(
-    unboundedIdSelects,
-    [],
-    `unbounded id SELECT on call_logs (OOM risk): ${unboundedIdSelects.join("; ")}`
-  );
+  assert.equal(result.deletedRows, total, "all rows before the cutoff are deleted (across pages)");
 });

@@ -32,7 +32,7 @@ export function recordCompressionCacheStats(args: {
         0,
         args.stats.originalTokens - args.stats.compressedTokens
       );
-      recordCacheStats({
+      await recordCacheStats({
         provider: cacheContext.provider ?? args.provider ?? "unknown",
         model: args.effectiveModel ?? "",
         compressionMode: args.mode,

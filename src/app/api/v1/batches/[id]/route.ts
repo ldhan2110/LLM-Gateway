@@ -57,7 +57,7 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
     );
   }
 
-  deleteBatch(id);
+  await deleteBatch(id);
 
   return NextResponse.json({ id, object: "batch", deleted: true }, { headers: CORS_HEADERS });
 }

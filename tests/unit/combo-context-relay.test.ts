@@ -334,7 +334,7 @@ test("handleComboChat context-relay respects handoffProviders and skips generati
   assert.equal(result.ok, true);
   assert.equal(usageCalls, 0);
   assert.equal(summaryCalls, 0);
-  assert.equal(handoffDb.getHandoff(sessionId, "relay-disabled-provider"), null);
+  assert.equal(await handoffDb.getHandoff(sessionId, "relay-disabled-provider"), null);
 });
 
 test("handleComboChat context-relay treats explicit empty handoffProviders as disabled", async () => {
@@ -382,15 +382,15 @@ test("handleComboChat context-relay treats explicit empty handoffProviders as di
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.equal(result.ok, true);
   assert.equal(usageCalls, 0);
-  assert.equal(handoffDb.getHandoff(sessionId, "relay-empty-providers"), null);
+  assert.equal(await handoffDb.getHandoff(sessionId, "relay-empty-providers"), null);
 });
 
 test("getLastSessionModel uses latest id as deterministic tie-breaker", async () => {
   const sessionId = "sess-model-history-tie";
   const comboName = "relay-model-history-tie";
 
-  handoffDb.recordSessionModelUsage(sessionId, comboName, "openai/old", "openai");
-  handoffDb.recordSessionModelUsage(sessionId, comboName, "anthropic/new", "anthropic");
+  await handoffDb.recordSessionModelUsage(sessionId, comboName, "openai/old", "openai");
+  await handoffDb.recordSessionModelUsage(sessionId, comboName, "anthropic/new", "anthropic");
 
   core
     .getDbInstance()
@@ -401,15 +401,15 @@ test("getLastSessionModel uses latest id as deterministic tie-breaker", async ()
     )
     .run("2026-05-26 12:00:00", sessionId, comboName);
 
-  assert.equal(handoffDb.getLastSessionModel(sessionId, comboName), "anthropic/new");
+  assert.equal(await handoffDb.getLastSessionModel(sessionId, comboName), "anthropic/new");
 });
 
 test("handleComboChat universal handoff does not accumulate injected handoffs across fallback targets", async () => {
   const sessionId = "sess-universal-no-mutate";
   const comboName = "universal-no-mutate";
 
-  handoffDb.recordSessionModelUsage(sessionId, comboName, "openai/previous", "openai");
-  handoffDb.upsertHandoff({
+  await handoffDb.recordSessionModelUsage(sessionId, comboName, "openai/previous", "openai");
+  await handoffDb.upsertHandoff({
     sessionId,
     comboName,
     fromAccount: "universal:openai/previous",
@@ -473,7 +473,7 @@ test("handleComboChat universal handoff detects model switch before recording cu
   const sessionId = "sess-universal-switch";
   const comboName = "universal-switch";
 
-  handoffDb.recordSessionModelUsage(sessionId, comboName, "openai/previous", "openai");
+  await handoffDb.recordSessionModelUsage(sessionId, comboName, "openai/previous", "openai");
   core
     .getDbInstance()
     .prepare(
@@ -542,7 +542,7 @@ test("context_cache_protection: pins body.model to last session model when histo
   const comboName = "cache-pin-combo";
 
   // Pre-record a prior model usage for this session/combo
-  handoffDb.recordSessionModelUsage(sessionId, comboName, "anthropic/claude-3-5-sonnet", "anthropic");
+  await handoffDb.recordSessionModelUsage(sessionId, comboName, "anthropic/claude-3-5-sonnet", "anthropic");
 
   const capturedModels: string[] = [];
 

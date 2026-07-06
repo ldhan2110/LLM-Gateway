@@ -3,7 +3,6 @@
  */
 
 import { getGitHubCopilotInternalUserHeaders } from "../config/providerHeaderProfiles.ts";
-import { getDbInstance } from "@/lib/db/core";
 import { fetchBailianQuota, type BailianTripleWindowQuota } from "./bailianQuotaFetcher.ts";
 import { fetchDeepseekQuota, type DeepseekQuota } from "./deepseekQuotaFetcher.ts";
 import { fetchOpencodeQuota, type OpencodeTripleWindowQuota } from "./opencodeQuotaFetcher.ts";
@@ -295,7 +294,7 @@ async function getXiaomiMimoUsage(connectionId: string) {
   }
   try {
     const { getMonthlyProviderTokensForConnection } = await import("@/lib/usage/usageStats");
-    const used = getMonthlyProviderTokensForConnection("xiaomi-mimo", connectionId);
+    const used = await getMonthlyProviderTokensForConnection("xiaomi-mimo", connectionId);
     const total = XIAOMI_MIMO_MONTHLY_TOKEN_LIMIT;
     const now = new Date();
     const resetAt = new Date(
@@ -330,7 +329,7 @@ async function getXaiUsage(connectionId: string) {
   }
   try {
     const { getMonthlyProviderTokensForConnection } = await import("@/lib/usage/usageStats");
-    const used = getMonthlyProviderTokensForConnection("xai", connectionId);
+    const used = await getMonthlyProviderTokensForConnection("xai", connectionId);
     return {
       plan: "xAI / Grok (OmniRoute-tracked)",
       quotas: {

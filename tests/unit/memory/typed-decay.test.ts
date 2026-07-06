@@ -154,8 +154,8 @@ describe("typedDecay — access tracking + sweep (DB)", () => {
       metadata: {},
       expiresAt: null,
     });
-    recordMemoryAccess([mem.id]);
-    recordMemoryAccess([mem.id]);
+    await recordMemoryAccess([mem.id]);
+    await recordMemoryAccess([mem.id]);
     const reloaded = await getMemory(mem.id);
     assert.equal(reloaded?.accessCount, 2);
     assert.ok(reloaded?.lastAccessedAt instanceof Date);
@@ -255,7 +255,7 @@ describe("typedDecay — access tracking + sweep (DB)", () => {
         expiresAt: null,
       });
     }
-    const rows = listMemoriesForDecay({ apiKeyId: "k1", limit: 2 });
+    const rows = await listMemoriesForDecay({ apiKeyId: "k1", limit: 2 });
     assert.equal(rows.length, 2);
     assert.ok(rows[0].createdAt instanceof Date);
     assert.equal(typeof rows[0].accessCount, "number");

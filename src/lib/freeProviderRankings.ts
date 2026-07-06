@@ -166,12 +166,12 @@ export function findMatchingIntelligence(
  * @param category - Optional filter for task category (e.g., "coding", "default")
  * @param limit - Maximum number of providers to return
  */
-export function computeFreeProviderRankings(
+export async function computeFreeProviderRankings(
   category?: string,
   limit: number = 50
-): FreeProviderRanking[] {
+): Promise<FreeProviderRanking[]> {
   const freeProviders = getFreeProviders();
-  const intelligenceEntries = listModelIntelligence({
+  const intelligenceEntries = await listModelIntelligence({
     source: "arena_elo",
     category: category || undefined,
   });

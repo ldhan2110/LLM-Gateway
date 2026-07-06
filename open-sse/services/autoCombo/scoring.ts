@@ -176,13 +176,13 @@ function calculateSpecificityMatch(
   }
 }
 
-export function calculateFactors(
+export async function calculateFactors(
   candidate: ProviderCandidate,
   pool: ProviderCandidate[],
   taskType: string,
-  getTaskFitness: (model: string, taskType: string) => number,
+  getTaskFitness: (model: string, taskType: string) => Promise<number>,
   manifestHint?: RoutingHint | null
-): ScoringFactors {
+): Promise<ScoringFactors> {
   const maxCost = Math.max(...pool.map((p) => p.costPer1MTokens), 0.001);
   const maxLatency = Math.max(...pool.map((p) => p.p95LatencyMs), 1);
   const maxStdDev = Math.max(...pool.map((p) => p.latencyStdDev), 0.001);
@@ -201,7 +201,7 @@ export function calculateFactors(
           : 0.0,
     costInv: clamp01(1 - candidate.costPer1MTokens / maxCost),
     latencyInv: clamp01(1 - candidate.p95LatencyMs / maxLatency),
-    taskFit: clamp01(getTaskFitness(candidate.model, taskType)),
+    taskFit: clamp01(await getTaskFitness(candidate.model, taskType)),
     stability: clamp01(1 - candidate.latencyStdDev / maxStdDev),
     tierPriority: calculateTierScore(candidate.accountTier, candidate.quotaResetIntervalSecs),
     tierAffinity: calculateTierAffinity(candidate, manifestHint),
@@ -212,16 +212,16 @@ export function calculateFactors(
   };
 }
 
-export function scorePool(
+export async function scorePool(
   pool: ProviderCandidate[],
   taskType: string,
   weights: ScoringWeights = DEFAULT_WEIGHTS,
-  getTaskFitness: (model: string, taskType: string) => number = () => 0.5,
+  getTaskFitness: (model: string, taskType: string) => Promise<number> = async () => 0.5,
   manifestHint?: RoutingHint | null
-): ScoredProvider[] {
-  return pool
-    .map((candidate) => {
-      const factors = calculateFactors(candidate, pool, taskType, getTaskFitness, manifestHint);
+): Promise<ScoredProvider[]> {
+  const scored = await Promise.all(
+    pool.map(async (candidate) => {
+      const factors = await calculateFactors(candidate, pool, taskType, getTaskFitness, manifestHint);
       return {
         provider: candidate.provider,
         model: candidate.model,
@@ -230,7 +230,8 @@ export function scorePool(
         connectionId: candidate.connectionId,
       };
     })
-    .sort((a, b) => b.score - a.score);
+  );
+  return scored.sort((a, b) => b.score - a.score);
 }
 
 /**

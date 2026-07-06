@@ -57,11 +57,11 @@ function seedSkill(overrides: Partial<Record<string, unknown>> = {}) {
 
 // ──────────────── updateSkill ────────────────
 
-test("updateSkill — patches enabled+mode, updates updated_at", () => {
+test("updateSkill — patches enabled+mode, updates updated_at", async () => {
   const id = seedSkill({ enabled: 1, mode: "auto" });
 
   // Act
-  const changed = skillsMod.updateSkill(id, { enabled: 0, mode: "off" });
+  const changed = await skillsMod.updateSkill(id, { enabled: 0, mode: "off" });
 
   assert.equal(changed, 1, "should affect 1 row");
 
@@ -74,10 +74,10 @@ test("updateSkill — patches enabled+mode, updates updated_at", () => {
   assert.equal(row.mode, "off");
 });
 
-test("updateSkill — only mode provided keeps enabled consistent", () => {
+test("updateSkill — only mode provided keeps enabled consistent", async () => {
   const id = seedSkill({ enabled: 0, mode: "off" });
 
-  skillsMod.updateSkill(id, { mode: "on" });
+  await skillsMod.updateSkill(id, { mode: "on" });
 
   const db = core.getDbInstance();
   const row = db.prepare("SELECT enabled, mode FROM skills WHERE id = ?").get(id) as {
@@ -87,13 +87,13 @@ test("updateSkill — only mode provided keeps enabled consistent", () => {
   assert.equal(row.mode, "on");
 });
 
-test("updateSkill — unknown columns are silently ignored (allowlist guard)", () => {
+test("updateSkill — unknown columns are silently ignored (allowlist guard)", async () => {
   const id = seedSkill({ enabled: 1, mode: "auto" });
 
   // Inject an unknown key; this must NOT throw or produce SQL with an injected column.
   const patch = { enabled: 0, "'; DROP TABLE skills; --": 1 } as Record<string, unknown>;
   // Cast via any to bypass TS type — testing the runtime allowlist
-  const changed = skillsMod.updateSkill(id, patch as Parameters<typeof skillsMod.updateSkill>[1]);
+  const changed = await skillsMod.updateSkill(id, patch as Parameters<typeof skillsMod.updateSkill>[1]);
   assert.equal(changed, 1, "should still apply the known field");
 
   const db = core.getDbInstance();
@@ -103,15 +103,15 @@ test("updateSkill — unknown columns are silently ignored (allowlist guard)", (
   assert.ok(tableExists, "skills table must still exist after attempted injection");
 });
 
-test("updateSkill — empty patch (all unknown columns) returns 0 changes", () => {
+test("updateSkill — empty patch (all unknown columns) returns 0 changes", async () => {
   const id = seedSkill();
   const patch = { unknownField: "x" } as Parameters<typeof skillsMod.updateSkill>[1];
-  const changed = skillsMod.updateSkill(id, patch);
+  const changed = await skillsMod.updateSkill(id, patch);
   assert.equal(changed, 0);
 });
 
-test("updateSkill — non-existent id returns 0 changes", () => {
-  const changed = skillsMod.updateSkill("non-existent-id", { enabled: 1 });
+test("updateSkill — non-existent id returns 0 changes", async () => {
+  const changed = await skillsMod.updateSkill("non-existent-id", { enabled: 1 });
   assert.equal(changed, 0);
 });
 

@@ -26,7 +26,7 @@ const log = logger("MEMORY_REINDEX");
 export async function runReindexBatch(
   limit = 100
 ): Promise<{ processed: number; errors: number }> {
-  const queue = getMemoryReindexQueue(limit);
+  const queue = await getMemoryReindexQueue(limit);
 
   if (queue.length === 0) {
     return { processed: 0, errors: 0 };
@@ -78,7 +78,7 @@ export async function runReindexBatch(
       }
 
       await vec.upsertVector(item.id, embeddingResult.vector);
-      markMemoryNeedsReindex(item.id, false);
+      await markMemoryNeedsReindex(item.id, false);
       processed++;
     } catch (err: unknown) {
       log.warn("memory.reindex.item.fail", {
@@ -97,6 +97,6 @@ export async function runReindexBatch(
 /**
  * Returns the number of memories currently pending reindex.
  */
-export function getReindexPending(): number {
+export async function getReindexPending(): Promise<number> {
   return countMemoryReindexPending();
 }

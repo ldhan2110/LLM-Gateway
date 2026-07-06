@@ -130,7 +130,7 @@ test("stats(): needsReindex reflects memories marked for reindex", async (t) => 
   }
 
   // Mark all as needing reindex.
-  const affected = markAllMemoriesNeedReindex();
+  const affected = await markAllMemoriesNeedReindex();
   assert.equal(affected, 5, "should mark 5 memories as needing reindex");
 
   const result = await store.stats();
@@ -161,7 +161,7 @@ test("stats(): needsReindex decreases as vectors are inserted (marking reindex=0
   insertMemory(db, "m2");
 
   // Mark all as pending.
-  markAllMemoriesNeedReindex();
+  await markAllMemoriesNeedReindex();
 
   const before = await store.stats();
   assert.equal(before.needsReindex, 2);

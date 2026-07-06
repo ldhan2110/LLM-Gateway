@@ -27,9 +27,9 @@ export interface DiscoveredWindow {
 
 export interface ReconcileDeps {
   getCatalogWindow: (provider: string, modelId: string) => number | null;
-  getExistingSource: (provider: string, modelId: string) => string | null;
-  writeAuto: (provider: string, modelId: string, window: number) => void;
-  removeOverride: (provider: string, modelId: string) => void;
+  getExistingSource: (provider: string, modelId: string) => string | null | Promise<string | null>;
+  writeAuto: (provider: string, modelId: string, window: number) => void | Promise<void>;
+  removeOverride: (provider: string, modelId: string) => void | Promise<void>;
 }
 
 export interface ReconcileResult {
@@ -44,17 +44,17 @@ export interface ReconcileResult {
  * which auto overrides to write/remove. Deterministic and side-effect-free except
  * through the injected `writeAuto`/`removeOverride`.
  */
-export function reconcileContextWindows(
+export async function reconcileContextWindows(
   discovered: DiscoveredWindow[],
   deps: ReconcileDeps
-): ReconcileResult {
+): Promise<ReconcileResult> {
   const result: ReconcileResult = { scanned: 0, written: 0, removed: 0, skippedManual: 0 };
   for (const { provider, modelId, window } of discovered) {
     result.scanned++;
     if (!provider || !modelId) continue;
     if (typeof window !== "number" || !Number.isInteger(window) || window <= 0) continue;
 
-    const existingSource = deps.getExistingSource(provider, modelId);
+    const existingSource = await deps.getExistingSource(provider, modelId);
     if (existingSource === "manual") {
       result.skippedManual++;
       continue;
@@ -62,11 +62,11 @@ export function reconcileContextWindows(
 
     const catalog = deps.getCatalogWindow(provider, modelId);
     if (window !== catalog) {
-      deps.writeAuto(provider, modelId, window);
+      await deps.writeAuto(provider, modelId, window);
       result.written++;
     } else if (existingSource) {
       // Discovered window now matches the catalog and a stale auto override exists → drop it.
-      deps.removeOverride(provider, modelId);
+      await deps.removeOverride(provider, modelId);
       result.removed++;
     }
   }
@@ -90,16 +90,16 @@ function toDiscoveredWindows(
 export async function runContextWindowReconcile(): Promise<ReconcileResult> {
   const byProvider = await getAllSyncedAvailableModels();
   const discovered = toDiscoveredWindows(byProvider);
-  return reconcileContextWindows(discovered, {
+  return await reconcileContextWindows(discovered, {
     getCatalogWindow: (provider, modelId) =>
       getResolvedModelCapabilities({ provider, model: modelId }).contextWindow,
-    getExistingSource: (provider, modelId) =>
-      getModelContextOverrideRecord(provider, modelId)?.source ?? null,
-    writeAuto: (provider, modelId, window) => {
-      setModelContextOverride(provider, modelId, window, "auto:discovery");
+    getExistingSource: async (provider, modelId) =>
+      (await getModelContextOverrideRecord(provider, modelId))?.source ?? null,
+    writeAuto: async (provider, modelId, window) => {
+      await setModelContextOverride(provider, modelId, window, "auto:discovery");
     },
-    removeOverride: (provider, modelId) => {
-      removeModelContextOverride(provider, modelId);
+    removeOverride: async (provider, modelId) => {
+      await removeModelContextOverride(provider, modelId);
     },
   });
 }

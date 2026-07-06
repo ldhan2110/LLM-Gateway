@@ -16,14 +16,15 @@ export function startReasoningCacheCleanupJob() {
   }
 
   const run = () => {
-    try {
-      const deleted = cleanupReasoningCache();
-      if (deleted > 0) {
-        console.log(`[ReasoningCache] expired entries removed=${deleted}`);
-      }
-    } catch (error) {
-      console.error("[ReasoningCache] Cleanup job failed:", error);
-    }
+    cleanupReasoningCache()
+      .then((deleted) => {
+        if (deleted > 0) {
+          console.log(`[ReasoningCache] expired entries removed=${deleted}`);
+        }
+      })
+      .catch((error) => {
+        console.error("[ReasoningCache] Cleanup job failed:", error);
+      });
   };
 
   run();

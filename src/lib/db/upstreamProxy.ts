@@ -1,5 +1,5 @@
 /** Upstream proxy config persistence for upstream_proxy_config table. */
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 interface UpstreamProxyConfig {
   id: number;
@@ -100,18 +100,19 @@ function rowToConfig(record: Record<string, unknown>): UpstreamProxyConfig {
 }
 
 export async function getUpstreamProxyConfigs() {
-  const db = getDbInstance();
-  const rows = db
-    .prepare("SELECT * FROM upstream_proxy_config ORDER BY provider_id")
-    .all() as UpstreamProxyRow[];
+  const db = getDbClient();
+  const rows = await db.all<UpstreamProxyRow>(
+    "SELECT * FROM upstream_proxy_config ORDER BY provider_id"
+  );
   return rows.map((row) => rowToConfig(toRecord(row)));
 }
 
 export async function getUpstreamProxyConfig(providerId: string) {
-  const db = getDbInstance();
-  const row = db
-    .prepare("SELECT * FROM upstream_proxy_config WHERE provider_id = ?")
-    .get(providerId) as UpstreamProxyRow | undefined;
+  const db = getDbClient();
+  const row = await db.get<UpstreamProxyRow>(
+    "SELECT * FROM upstream_proxy_config WHERE provider_id = ?",
+    providerId
+  );
   if (!row) return null;
   return rowToConfig(toRecord(row));
 }
@@ -125,7 +126,7 @@ export async function upsertUpstreamProxyConfig(data: {
   enabled?: boolean;
   family?: string;
 }) {
-  const db = getDbInstance();
+  const db = getDbClient();
   const mode = data.mode ?? "native";
   const cliproxyapiModelMapping =
     data.cliproxyapiModelMapping !== undefined
@@ -136,7 +137,7 @@ export async function upsertUpstreamProxyConfig(data: {
   const enabled = data.enabled !== false ? 1 : 0;
   const family = data.family ?? "auto";
 
-  db.prepare(
+  await db.run(
     `INSERT INTO upstream_proxy_config
      (provider_id, mode, cliproxyapi_model_mapping, native_priority, cliproxyapi_priority, enabled, family, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
@@ -147,8 +148,7 @@ export async function upsertUpstreamProxyConfig(data: {
        cliproxyapi_priority = excluded.cliproxyapi_priority,
        enabled = excluded.enabled,
        family = excluded.family,
-       updated_at = datetime('now')`
-  ).run(
+       updated_at = datetime('now')`,
     data.providerId,
     mode,
     cliproxyapiModelMapping,
@@ -165,7 +165,7 @@ export async function updateUpstreamProxyConfig(
   providerId: string,
   updates: Record<string, unknown>
 ) {
-  const db = getDbInstance();
+  const db = getDbClient();
   const current = await getUpstreamProxyConfig(providerId);
   if (!current) {
     throw new Error(`Provider ${providerId} not found`);
@@ -204,7 +204,8 @@ export async function updateUpstreamProxyConfig(
   }
 
   params.push(providerId);
-  db.prepare(`UPDATE upstream_proxy_config SET ${sets.join(", ")} WHERE provider_id = ?`).run(
+  await db.run(
+    `UPDATE upstream_proxy_config SET ${sets.join(", ")} WHERE provider_id = ?`,
     ...params
   );
 
@@ -212,20 +213,20 @@ export async function updateUpstreamProxyConfig(
 }
 
 export async function deleteUpstreamProxyConfig(providerId: string) {
-  const db = getDbInstance();
-  const result = db
-    .prepare("DELETE FROM upstream_proxy_config WHERE provider_id = ?")
-    .run(providerId);
+  const db = getDbClient();
+  const result = await db.run(
+    "DELETE FROM upstream_proxy_config WHERE provider_id = ?",
+    providerId
+  );
   return result.changes > 0;
 }
 
 export async function getProvidersByMode(mode: string) {
-  const db = getDbInstance();
-  const rows = db
-    .prepare(
-      "SELECT * FROM upstream_proxy_config WHERE mode = ? AND enabled = 1 ORDER BY provider_id"
-    )
-    .all(mode) as UpstreamProxyRow[];
+  const db = getDbClient();
+  const rows = await db.all<UpstreamProxyRow>(
+    "SELECT * FROM upstream_proxy_config WHERE mode = ? AND enabled = 1 ORDER BY provider_id",
+    mode
+  );
   return rows.map((row) => rowToConfig(toRecord(row)));
 }
 

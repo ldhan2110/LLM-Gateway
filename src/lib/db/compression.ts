@@ -1,6 +1,6 @@
 import { backupDbFile } from "./backup";
 import { getDefaultCompressionCombo } from "./compressionCombos";
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 import { invalidateDbCache } from "./readCache";
 import {
   ENGINE_IDS,
@@ -523,7 +523,7 @@ function aggressiveEnabled(value: AggressiveConfig | undefined): boolean {
 }
 
 export async function getCompressionSettings(): Promise<CompressionConfig> {
-  const db = getDbInstance();
+  const db = getDbClient();
   if (
     compressionSettingsCache &&
     Date.now() < compressionSettingsCache.expiresAt &&
@@ -533,7 +533,7 @@ export async function getCompressionSettings(): Promise<CompressionConfig> {
   }
   compressionSettingsCache = null;
 
-  const rows = db.prepare("SELECT key, value FROM key_value WHERE namespace = ?").all(NAMESPACE);
+  const rows = await db.all("SELECT key, value FROM key_value WHERE namespace = ?", NAMESPACE);
 
   const config: CompressionConfig = {
     ...DEFAULT_COMPRESSION_CONFIG,
@@ -718,25 +718,27 @@ export async function getCompressionSettings(): Promise<CompressionConfig> {
 export async function updateCompressionSettings(
   updates: Partial<CompressionConfig>
 ): Promise<CompressionConfig> {
-  const db = getDbInstance();
-  const insert = db.prepare(
-    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)"
-  );
+  const db = getDbClient();
 
-  const tx = db.transaction(() => {
+  await db.transaction(async (c) => {
     for (const [key, value] of Object.entries(updates)) {
       if (value === undefined) continue;
       // Persist the engines map as ONE sanitized JSON row so the read path always gets
       // well-formed { enabled, level? } toggles for known engine ids.
       if (key === "engines") {
-        insert.run(NAMESPACE, key, JSON.stringify(sanitizeEnginesForWrite(value)));
+        await c.run(
+          "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)",
+          NAMESPACE, key, JSON.stringify(sanitizeEnginesForWrite(value))
+        );
         continue;
       }
-      insert.run(NAMESPACE, key, JSON.stringify(value));
+      await c.run(
+        "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)",
+        NAMESPACE, key, JSON.stringify(value)
+      );
     }
   });
 
-  tx();
   backupDbFile("pre-write");
   compressionSettingsCache = null;
   invalidateDbCache();
@@ -758,10 +760,11 @@ function normalizeMcpAccessibilityConfig(value: unknown): McpAccessibilityConfig
 }
 
 export async function getMcpAccessibilityConfig(): Promise<McpAccessibilityConfig> {
-  const db = getDbInstance();
-  const row = db
-    .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
-    .get(NAMESPACE, "mcpAccessibility") as { value: string } | undefined;
+  const db = getDbClient();
+  const row = await db.get<{ value: string }>(
+    "SELECT value FROM key_value WHERE namespace = ? AND key = ?",
+    NAMESPACE, "mcpAccessibility"
+  );
   return normalizeMcpAccessibilityConfig(parseJsonSafe(row?.value ?? null));
 }
 
@@ -769,11 +772,10 @@ export async function setMcpAccessibilityConfig(
   value: Partial<McpAccessibilityConfig>
 ): Promise<void> {
   const next = normalizeMcpAccessibilityConfig({ ...DEFAULT_MCP_ACCESSIBILITY_CONFIG, ...value });
-  const db = getDbInstance();
-  db.prepare("INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)").run(
-    NAMESPACE,
-    "mcpAccessibility",
-    JSON.stringify(next)
+  const db = getDbClient();
+  await db.run(
+    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)",
+    NAMESPACE, "mcpAccessibility", JSON.stringify(next)
   );
   compressionSettingsCache = null;
   invalidateDbCache();

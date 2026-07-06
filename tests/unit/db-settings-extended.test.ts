@@ -167,7 +167,7 @@ test("getCacheTrend returns an array", async () => {
 
 test("clearAllLKGP does not throw", async () => {
   await resetStorage();
-  assert.doesNotThrow(() => settings.clearAllLKGP());
+  await assert.doesNotReject(() => settings.clearAllLKGP());
 });
 
 test("getLKGP returns null for unknown combo/model", async () => {

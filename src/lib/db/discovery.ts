@@ -4,7 +4,7 @@
  * @module db/discovery
  */
 
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 import { logger } from "../../open-sse/utils/logger";
 
 const log = logger("DB_DISCOVERY");
@@ -25,14 +25,12 @@ export interface DiscoveryResult {
   verifiedAt?: string;
 }
 
-export function insertDiscoveryResult(result: DiscoveryResult): number {
-  const db = getDbInstance();
+export async function insertDiscoveryResult(result: DiscoveryResult): Promise<number> {
+  const db = getDbClient();
   const now = new Date().toISOString();
-  const stmt = db.prepare(`
-    INSERT INTO discovery_results (provider_id, method, auth_type, endpoint, models_json, rate_limit, feasibility, risk_level, status, notes, discovered_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const info = stmt.run(
+  const info = await db.run(
+    `INSERT INTO discovery_results (provider_id, method, auth_type, endpoint, models_json, rate_limit, feasibility, risk_level, status, notes, discovered_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     result.providerId,
     result.method,
     result.authType,
@@ -49,32 +47,38 @@ export function insertDiscoveryResult(result: DiscoveryResult): number {
   return info.lastInsertRowid as number;
 }
 
-export function listDiscoveryResults(status?: string): DiscoveryResult[] {
-  const db = getDbInstance();
+export async function listDiscoveryResults(status?: string): Promise<DiscoveryResult[]> {
+  const db = getDbClient();
   const rows = status
-    ? db.prepare("SELECT * FROM discovery_results WHERE status = ? ORDER BY discovered_at DESC").all(status)
-    : db.prepare("SELECT * FROM discovery_results ORDER BY discovered_at DESC").all();
+    ? await db.all("SELECT * FROM discovery_results WHERE status = ? ORDER BY discovered_at DESC", status)
+    : await db.all("SELECT * FROM discovery_results ORDER BY discovered_at DESC");
   return (rows as Record<string, unknown>[]).map(rowToResult);
 }
 
-export function getDiscoveryResultById(id: number): DiscoveryResult | null {
-  const db = getDbInstance();
-  const row = db.prepare("SELECT * FROM discovery_results WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+export async function getDiscoveryResultById(id: number): Promise<DiscoveryResult | null> {
+  const db = getDbClient();
+  const row = await db.get("SELECT * FROM discovery_results WHERE id = ?", id) as Record<string, unknown> | undefined;
   return row ? rowToResult(row) : null;
 }
 
-export function updateDiscoveryStatus(id: number, status: string, notes?: string): boolean {
-  const db = getDbInstance();
+export async function updateDiscoveryStatus(id: number, status: string, notes?: string): Promise<boolean> {
+  const db = getDbClient();
   const now = new Date().toISOString();
-  const result = db
-    .prepare("UPDATE discovery_results SET status = ?, notes = COALESCE(?, notes), verified_at = CASE WHEN ? = 'verified' THEN ? ELSE verified_at END, updated_at = ? WHERE id = ?")
-    .run(status, notes ?? null, status, now, now, id);
+  const result = await db.run(
+    "UPDATE discovery_results SET status = ?, notes = COALESCE(?, notes), verified_at = CASE WHEN ? = 'verified' THEN ? ELSE verified_at END, updated_at = ? WHERE id = ?",
+    status,
+    notes ?? null,
+    status,
+    now,
+    now,
+    id
+  );
   return result.changes > 0;
 }
 
-export function deleteDiscoveryResult(id: number): boolean {
-  const db = getDbInstance();
-  const result = db.prepare("DELETE FROM discovery_results WHERE id = ?").run(id);
+export async function deleteDiscoveryResult(id: number): Promise<boolean> {
+  const db = getDbClient();
+  const result = await db.run("DELETE FROM discovery_results WHERE id = ?", id);
   return result.changes > 0;
 }
 

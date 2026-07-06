@@ -58,13 +58,18 @@ async function makeConnection(provider: string, name: string): Promise<string> {
   return (conn as any).id as string;
 }
 
+/** Drain the microtask queue so fire-and-forget DB writes have a chance to land. */
+async function flushMicrotasks() {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 // ── applyErrorState persistence (Bug Fix A) ────────────────────────────────
 
 test("applyErrorState: 429 cascade persists cooldown via setConnectionRateLimitUntil", async () => {
   const connId = await makeConnection("opencode-go", "OC-GO Cascade Test");
 
   assert.equal(
-    providersDb.isConnectionRateLimited(connId),
+    await providersDb.isConnectionRateLimited(connId),
     false,
     "should start as not rate-limited",
   );
@@ -77,13 +82,15 @@ test("applyErrorState: 429 cascade persists cooldown via setConnectionRateLimitU
     "opencode-go",
   );
 
+  await flushMicrotasks();
+
   assert.equal(
-    providersDb.isConnectionRateLimited(connId),
+    await providersDb.isConnectionRateLimited(connId),
     true,
     "should be rate-limited in the DB after applyErrorState with 429",
   );
 
-  const limited = providersDb.getRateLimitedConnections("opencode-go");
+  const limited = await providersDb.getRateLimitedConnections("opencode-go");
   assert.ok(
     limited.some((c: any) => c.id === connId),
     "should appear in getRateLimitedConnections list for the provider",
@@ -111,8 +118,10 @@ test("applyErrorState: non-429 / non-rateLimit errors do NOT persist a cooldown"
     "opencode-go",
   );
 
+  await flushMicrotasks();
+
   assert.equal(
-    providersDb.isConnectionRateLimited(connId),
+    await providersDb.isConnectionRateLimited(connId),
     false,
     "non-rate-limit error should not persist a cooldown",
   );
@@ -138,17 +147,19 @@ test("resetAccountState clears the persisted cooldown after a success", async ()
   const connId = await makeConnection("opencode-go", "OC-GO Reset Test");
 
   // Force the connection into a cooled state.
-  providersDb.setConnectionRateLimitUntil(connId, Date.now() + 60_000);
+  await providersDb.setConnectionRateLimitUntil(connId, Date.now() + 60_000);
   assert.equal(
-    providersDb.isConnectionRateLimited(connId),
+    await providersDb.isConnectionRateLimited(connId),
     true,
     "precondition: should be rate-limited after explicit set",
   );
 
   resetAccountState({ id: connId, backoffLevel: 1, status: "error" });
 
+  await flushMicrotasks();
+
   assert.equal(
-    providersDb.isConnectionRateLimited(connId),
+    await providersDb.isConnectionRateLimited(connId),
     false,
     "resetAccountState should clear the persisted cooldown",
   );
@@ -156,33 +167,31 @@ test("resetAccountState clears the persisted cooldown after a success", async ()
 
 // ── localDb re-exports (Bug Fix F) ──────────────────────────────────────────
 
-test("localDb.markConnectionRateLimitedUntil: writes cooldown; never throws on bad id", () => {
+test("localDb.markConnectionRateLimitedUntil: writes cooldown; never throws on bad id", async () => {
   const connId = "non-existent-id-xxxxx";
   // Must not throw even though the id doesn't exist — DB write failure
   // inside the wrapper must never crash the request path.
-  assert.doesNotThrow(() =>
-    markConnectionRateLimitedUntil(connId, 5_000),
-  );
+  await assert.doesNotReject(() => markConnectionRateLimitedUntil(connId, 5_000));
 });
 
-test("localDb.clearConnectionRateLimit: does not throw on bad id", () => {
+test("localDb.clearConnectionRateLimit: does not throw on bad id", async () => {
   const connId = "non-existent-id-xxxxx";
-  assert.doesNotThrow(() => clearConnectionRateLimit(connId));
+  await assert.doesNotReject(() => clearConnectionRateLimit(connId));
 });
 
 test("localDb.markConnectionRateLimitedUntil + clearConnectionRateLimit round-trip", async () => {
   const connId = await makeConnection("opencode-go", "OC-GO RoundTrip");
 
-  markConnectionRateLimitedUntil(connId, 60_000);
+  await markConnectionRateLimitedUntil(connId, 60_000);
   assert.equal(
-    providersDb.isConnectionRateLimited(connId),
+    await providersDb.isConnectionRateLimited(connId),
     true,
     "after markConnectionRateLimitedUntil the connection should be limited",
   );
 
-  clearConnectionRateLimit(connId);
+  await clearConnectionRateLimit(connId);
   assert.equal(
-    providersDb.isConnectionRateLimited(connId),
+    await providersDb.isConnectionRateLimited(connId),
     false,
     "after clearConnectionRateLimit the connection should not be limited",
   );
@@ -202,13 +211,15 @@ test("multi-key scenario: cooling one OpenCode-Go key does NOT poison other keys
     "opencode-go",
   );
 
+  await flushMicrotasks();
+
   assert.equal(
-    providersDb.isConnectionRateLimited(connA),
+    await providersDb.isConnectionRateLimited(connA),
     true,
     "key A should be rate-limited after monthly envelope",
   );
   assert.equal(
-    providersDb.isConnectionRateLimited(connB),
+    await providersDb.isConnectionRateLimited(connB),
     false,
     "key B should remain available — scope is per-connection, not per-provider",
   );

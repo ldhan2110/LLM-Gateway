@@ -42,7 +42,7 @@ function makeFileContent(text: string) {
   return Buffer.from(text);
 }
 
-function createTestFile(
+async function createTestFile(
   opts: {
     filename?: string;
     content?: Buffer | null;

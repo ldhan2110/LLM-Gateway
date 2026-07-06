@@ -73,11 +73,11 @@ test("GET /v1/providers/:provider/models accepts anthropic-compatible connection
 });
 
 test("GET /v1/providers/:provider/models returns synced embedded service models", async () => {
-  serviceModelsDb.saveServiceModels("cliproxyapi", [
+  await serviceModelsDb.saveServiceModels("cliproxyapi", [
     { id: "cli/gpt-5", name: "GPT-5 via CLIProxyAPI" },
     { id: "old-model" },
   ]);
-  serviceModelsDb.saveServiceModels("cliproxyapi", [
+  await serviceModelsDb.saveServiceModels("cliproxyapi", [
     { id: "cli/gpt-5", name: "GPT-5 via CLIProxyAPI" },
   ]);
 

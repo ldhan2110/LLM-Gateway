@@ -1,14 +1,12 @@
 /** db/models/aliases.ts — model alias CRUD (modelAliases namespace). */
 
-import { getDbInstance } from "../core";
+import { getDbClient } from "../core";
 import { backupDbFile } from "../backup";
 import { getKeyValue } from "./shared";
 
 export async function getModelAliases() {
-  const db = getDbInstance();
-  const rows = db
-    .prepare("SELECT key, value FROM key_value WHERE namespace = 'modelAliases'")
-    .all();
+  const db = getDbClient();
+  const rows = await db.all("SELECT key, value FROM key_value WHERE namespace = 'modelAliases'");
   const result: Record<string, unknown> = {};
   for (const row of rows) {
     const { key, value } = getKeyValue(row);
@@ -19,16 +17,18 @@ export async function getModelAliases() {
 }
 
 export async function setModelAlias(alias: string, model: unknown) {
-  const db = getDbInstance();
-  db.prepare(
-    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('modelAliases', ?, ?)"
-  ).run(alias, JSON.stringify(model));
+  const db = getDbClient();
+  await db.run(
+    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES ('modelAliases', ?, ?)",
+    alias,
+    JSON.stringify(model)
+  );
   backupDbFile("pre-write");
 }
 
 export async function deleteModelAlias(alias: string) {
-  const db = getDbInstance();
-  db.prepare("DELETE FROM key_value WHERE namespace = 'modelAliases' AND key = ?").run(alias);
+  const db = getDbClient();
+  await db.run("DELETE FROM key_value WHERE namespace = 'modelAliases' AND key = ?", alias);
   backupDbFile("pre-write");
 }
 

@@ -203,7 +203,7 @@ export async function POST(request) {
 
     // Persist last-configured timestamp
     try {
-      saveCliToolLastConfigured("kilo");
+      await saveCliToolLastConfigured("kilo");
     } catch {
       /* non-critical */
     }
@@ -271,7 +271,7 @@ export async function DELETE(request: Request) {
 
     // Clear last-configured timestamp
     try {
-      deleteCliToolLastConfigured("kilo");
+      await deleteCliToolLastConfigured("kilo");
     } catch {
       /* non-critical */
     }

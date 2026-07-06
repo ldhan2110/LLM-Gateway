@@ -11,19 +11,9 @@
  * @module lib/db/cliToolState
  */
 
-import { getDbInstance, isBuildPhase, isCloud } from "./core";
+import { getDbClient, isBuildPhase, isCloud } from "./core";
 
 type JsonRecord = Record<string, unknown>;
-
-interface StatementLike<TRow = unknown> {
-  all: (...params: unknown[]) => TRow[];
-  get: (...params: unknown[]) => TRow | undefined;
-  run: (...params: unknown[]) => { changes?: number };
-}
-
-interface DbLike {
-  prepare: <TRow = unknown>(sql: string) => StatementLike<TRow>;
-}
 
 interface KeyValueRow {
   key: string;
@@ -47,13 +37,14 @@ function toRecord(value: unknown): JsonRecord | null {
 /**
  * Save last-configured timestamp for a CLI tool.
  */
-export function saveCliToolLastConfigured(
+export async function saveCliToolLastConfigured(
   toolId: string,
   timestamp: string = new Date().toISOString()
-): void {
+): Promise<void> {
   if (isBuildPhase || isCloud) return;
-  const db = getDbInstance() as unknown as DbLike;
-  db.prepare("INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)").run(
+  const db = getDbClient();
+  await db.run(
+    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)",
     "cliToolLastConfig",
     toolId,
     JSON.stringify(timestamp)
@@ -64,14 +55,16 @@ export function saveCliToolLastConfigured(
  * Get last-configured timestamp for a CLI tool.
  * @returns ISO timestamp string or null if never configured.
  */
-export function getCliToolLastConfigured(toolId: string): string | null {
+export async function getCliToolLastConfigured(toolId: string): Promise<string | null> {
   if (isBuildPhase || isCloud) return null;
-  const db = getDbInstance() as unknown as DbLike;
-  const row = db
-    .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
-    .get("cliToolLastConfig", toolId);
+  const db = getDbClient();
+  const row = await db.get<KeyValueRow>(
+    "SELECT value FROM key_value WHERE namespace = ? AND key = ?",
+    "cliToolLastConfig",
+    toolId
+  );
   if (!row) return null;
-  const parsed = parseJsonValue((row as KeyValueRow).value);
+  const parsed = parseJsonValue(row.value);
   return typeof parsed === "string" ? parsed : null;
 }
 
@@ -79,12 +72,13 @@ export function getCliToolLastConfigured(toolId: string): string | null {
  * Get all CLI tool last-configured timestamps.
  * @returns Record<toolId, ISO timestamp>
  */
-export function getAllCliToolLastConfigured(): Record<string, string> {
+export async function getAllCliToolLastConfigured(): Promise<Record<string, string>> {
   if (isBuildPhase || isCloud) return {};
-  const db = getDbInstance() as unknown as DbLike;
-  const rows = db
-    .prepare("SELECT key, value FROM key_value WHERE namespace = ?")
-    .all("cliToolLastConfig") as KeyValueRow[];
+  const db = getDbClient();
+  const rows = await db.all<KeyValueRow>(
+    "SELECT key, value FROM key_value WHERE namespace = ?",
+    "cliToolLastConfig"
+  );
   const result: Record<string, string> = {};
   for (const row of rows) {
     const parsed = parseJsonValue(row.value);
@@ -98,10 +92,11 @@ export function getAllCliToolLastConfigured(): Record<string, string> {
 /**
  * Delete last-configured timestamp for a CLI tool.
  */
-export function deleteCliToolLastConfigured(toolId: string): void {
+export async function deleteCliToolLastConfigured(toolId: string): Promise<void> {
   if (isBuildPhase || isCloud) return;
-  const db = getDbInstance() as unknown as DbLike;
-  db.prepare("DELETE FROM key_value WHERE namespace = ? AND key = ?").run(
+  const db = getDbClient();
+  await db.run(
+    "DELETE FROM key_value WHERE namespace = ? AND key = ?",
     "cliToolLastConfig",
     toolId
   );
@@ -114,16 +109,22 @@ export function deleteCliToolLastConfigured(toolId: string): void {
  * Only saves if no snapshot exists yet (first-time only).
  * @returns true if saved, false if snapshot already exists.
  */
-export function saveCliToolInitialConfig(toolId: string, config: JsonRecord): boolean {
+export async function saveCliToolInitialConfig(
+  toolId: string,
+  config: JsonRecord
+): Promise<boolean> {
   if (isBuildPhase || isCloud) return false;
-  const db = getDbInstance() as unknown as DbLike;
+  const db = getDbClient();
   // Only save if not already stored
-  const existing = db
-    .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
-    .get("cliToolInitialConfig", toolId);
+  const existing = await db.get<KeyValueRow>(
+    "SELECT value FROM key_value WHERE namespace = ? AND key = ?",
+    "cliToolInitialConfig",
+    toolId
+  );
   if (existing) return false;
 
-  db.prepare("INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)").run(
+  await db.run(
+    "INSERT OR REPLACE INTO key_value (namespace, key, value) VALUES (?, ?, ?)",
     "cliToolInitialConfig",
     toolId,
     JSON.stringify(config)
@@ -135,24 +136,27 @@ export function saveCliToolInitialConfig(toolId: string, config: JsonRecord): bo
  * Get the initial config snapshot for a CLI tool.
  * @returns Config object or null if no snapshot exists.
  */
-export function getCliToolInitialConfig(toolId: string): JsonRecord | null {
+export async function getCliToolInitialConfig(toolId: string): Promise<JsonRecord | null> {
   if (isBuildPhase || isCloud) return null;
-  const db = getDbInstance() as unknown as DbLike;
-  const row = db
-    .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
-    .get("cliToolInitialConfig", toolId);
+  const db = getDbClient();
+  const row = await db.get<KeyValueRow>(
+    "SELECT value FROM key_value WHERE namespace = ? AND key = ?",
+    "cliToolInitialConfig",
+    toolId
+  );
   if (!row) return null;
-  const parsed = parseJsonValue((row as KeyValueRow).value);
+  const parsed = parseJsonValue(row.value);
   return toRecord(parsed);
 }
 
 /**
  * Delete the initial config snapshot for a CLI tool.
  */
-export function deleteCliToolInitialConfig(toolId: string): void {
+export async function deleteCliToolInitialConfig(toolId: string): Promise<void> {
   if (isBuildPhase || isCloud) return;
-  const db = getDbInstance() as unknown as DbLike;
-  db.prepare("DELETE FROM key_value WHERE namespace = ? AND key = ?").run(
+  const db = getDbClient();
+  await db.run(
+    "DELETE FROM key_value WHERE namespace = ? AND key = ?",
     "cliToolInitialConfig",
     toolId
   );

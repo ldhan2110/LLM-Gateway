@@ -236,10 +236,10 @@ function getActiveBudgetLimit(budget: NormalizedBudgetConfig): number {
   return budget.dailyLimitUsd;
 }
 
-function getBudgetWindowTotal(apiKeyId: string, periodStartAt: number): number {
+async function getBudgetWindowTotal(apiKeyId: string, periodStartAt: number): Promise<number> {
   try {
     return (
-      loadCostTotal(apiKeyId, periodStartAt) +
+      (await loadCostTotal(apiKeyId, periodStartAt)) +
       spendBatchWriter.getPendingCostTotal(apiKeyId, periodStartAt)
     );
   } catch {
@@ -247,15 +247,16 @@ function getBudgetWindowTotal(apiKeyId: string, periodStartAt: number): number {
   }
 }
 
-function getBudgetWindowRangeTotal(
+async function getBudgetWindowRangeTotal(
   apiKeyId: string,
   periodStartAt: number,
   periodEndAt: number
-): number {
+): Promise<number> {
   try {
     return (
-      sumEntries(toCostEntries(loadCostEntriesInRange(apiKeyId, periodStartAt, periodEndAt))) +
-      spendBatchWriter.getPendingCostTotal(apiKeyId, periodStartAt, periodEndAt)
+      sumEntries(
+        toCostEntries(await loadCostEntriesInRange(apiKeyId, periodStartAt, periodEndAt))
+      ) + spendBatchWriter.getPendingCostTotal(apiKeyId, periodStartAt, periodEndAt)
     );
   } catch {
     return 0;
@@ -288,24 +289,25 @@ function syncBudgetSchedule(
     normalized.lastBudgetResetAt !== null && window.periodStartAt > normalized.lastBudgetResetAt;
 
   if (resetRolled && options.logReset !== false) {
-    const previousSpend = getBudgetWindowRangeTotal(
+    getBudgetWindowRangeTotal(
       apiKeyId,
       normalized.lastBudgetResetAt as number,
       window.periodStartAt
-    );
-    try {
-      saveBudgetResetLog({
-        apiKeyId,
-        resetInterval: normalized.resetInterval,
-        previousSpend,
-        resetAt: window.periodStartAt,
-        nextResetAt: window.nextResetAt,
-        periodStart: window.periodStartAt,
-        periodEnd: window.nextResetAt,
+    )
+      .then((previousSpend) =>
+        saveBudgetResetLog({
+          apiKeyId,
+          resetInterval: normalized.resetInterval,
+          previousSpend,
+          resetAt: window.periodStartAt,
+          nextResetAt: window.nextResetAt,
+          periodStart: window.periodStartAt,
+          periodEnd: window.nextResetAt,
+        })
+      )
+      .catch(() => {
+        // Non-fatal: budget logic still proceeds even if logging fails.
       });
-    } catch {
-      // Non-fatal: budget logic still proceeds even if logging fails.
-    }
   }
 
   const updated: NormalizedBudgetConfig = {
@@ -329,11 +331,9 @@ function syncBudgetSchedule(
     normalized.resetTime !== updated.resetTime;
 
   if (changed && options.persist !== false) {
-    try {
-      saveBudget(apiKeyId, updated);
-    } catch {
+    saveBudget(apiKeyId, updated).catch(() => {
       // Non-critical: in-memory cache still works.
-    }
+    });
   }
 
   budgets.set(apiKeyId, updated);
@@ -362,14 +362,16 @@ export function getBudget(apiKeyId: string): NormalizedBudgetConfig | null {
     return syncBudgetSchedule(apiKeyId, cached);
   }
 
-  try {
-    const fromDb = loadBudget(apiKeyId) as BudgetConfig | null;
-    if (fromDb) {
-      return syncBudgetSchedule(apiKeyId, fromDb);
-    }
-  } catch {
-    // DB may not be ready.
-  }
+  // Async load into cache; return null on first call until cache is warm
+  loadBudget(apiKeyId)
+    .then((fromDb) => {
+      if (fromDb && !budgets.has(apiKeyId)) {
+        syncBudgetSchedule(apiKeyId, fromDb as BudgetConfig);
+      }
+    })
+    .catch(() => {
+      // DB may not be ready.
+    });
 
   return null;
 }
@@ -382,12 +384,12 @@ export function getBudget(apiKeyId: string): NormalizedBudgetConfig | null {
 export function deleteBudget(apiKeyId: string) {
   budgets.delete(apiKeyId);
   discardSpendBatchEntries(apiKeyId);
-  try {
-    dbDeleteBudget(apiKeyId);
-    deleteCostEntries(apiKeyId);
-  } catch {
+  dbDeleteBudget(apiKeyId).catch(() => {
     // Non-critical.
-  }
+  });
+  deleteCostEntries(apiKeyId).catch(() => {
+    // Non-critical.
+  });
 }
 
 /**
@@ -407,12 +409,12 @@ export function recordCost(apiKeyId: string, cost: number): void {
 /**
  * Sync all budgets against the current clock so overdue resets get persisted.
  */
-export function syncAllBudgetSchedules(now = Date.now()) {
+export async function syncAllBudgetSchedules(now = Date.now()) {
   let processed = 0;
   let resetCount = 0;
 
   try {
-    const allBudgets = loadAllBudgets();
+    const allBudgets = await loadAllBudgets();
     for (const [apiKeyId, budget] of Object.entries(allBudgets)) {
       processed += 1;
       const synced = syncBudgetSchedule(apiKeyId, budget, now, { logReset: true, persist: true });
@@ -434,7 +436,7 @@ export function syncAllBudgetSchedules(now = Date.now()) {
  * @param {number} [additionalCost=0] - Projected cost to check
  * @returns {{ allowed: boolean, reason?: string, dailyUsed: number, dailyLimit: number, warningReached: boolean, remaining: number, periodUsed: number, activeLimitUsd: number, resetInterval: BudgetResetInterval | null, resetTime: string | null, budgetResetAt: number | null, lastBudgetResetAt: number | null, periodStartAt: number | null }}
  */
-export function checkBudget(apiKeyId: string, additionalCost = 0) {
+export async function checkBudget(apiKeyId: string, additionalCost = 0) {
   const budget = getBudget(apiKeyId);
   if (!budget) {
     return {
@@ -454,7 +456,7 @@ export function checkBudget(apiKeyId: string, additionalCost = 0) {
   }
 
   const window = getBudgetWindow(budget.resetInterval, budget.resetTime);
-  const periodUsed = getBudgetWindowTotal(apiKeyId, window.periodStartAt);
+  const periodUsed = await getBudgetWindowTotal(apiKeyId, window.periodStartAt);
   const projectedTotal = periodUsed + additionalCost;
   const activeLimitUsd = getActiveBudgetLimit(budget);
   const warningReached =
@@ -468,18 +470,13 @@ export function checkBudget(apiKeyId: string, additionalCost = 0) {
       warningPeriodStart: window.periodStartAt,
     };
     budgets.set(apiKeyId, updatedBudget);
-    try {
-      saveBudget(apiKeyId, updatedBudget);
-      emitBudgetWarning(
-        apiKeyId,
-        updatedBudget,
-        projectedTotal,
-        activeLimitUsd,
-        window.nextResetAt
-      );
-    } catch {
-      // Non-critical.
-    }
+    saveBudget(apiKeyId, updatedBudget)
+      .then(() => {
+        emitBudgetWarning(apiKeyId, updatedBudget, projectedTotal, activeLimitUsd, window.nextResetAt);
+      })
+      .catch(() => {
+        // Non-critical.
+      });
   }
 
   if (activeLimitUsd > 0 && projectedTotal > activeLimitUsd) {
@@ -522,13 +519,13 @@ export function checkBudget(apiKeyId: string, additionalCost = 0) {
  * @param {string} apiKeyId
  * @returns {number} Total cost today in USD
  */
-export function getDailyTotal(apiKeyId: string): number {
+export async function getDailyTotal(apiKeyId: string): Promise<number> {
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
 
   try {
     return (
-      sumEntries(toCostEntries(loadCostEntries(apiKeyId, todayStart.getTime()))) +
+      sumEntries(toCostEntries(await loadCostEntries(apiKeyId, todayStart.getTime()))) +
       spendBatchWriter.getPendingCostTotal(apiKeyId, todayStart.getTime())
     );
   } catch {
@@ -542,7 +539,7 @@ export function getDailyTotal(apiKeyId: string): number {
  * @param {string} apiKeyId
  * @returns {BudgetSummary}
  */
-export function getCostSummary(apiKeyId: string): BudgetSummary {
+export async function getCostSummary(apiKeyId: string): Promise<BudgetSummary> {
   const now = new Date();
   const todayStart = new Date(now);
   todayStart.setHours(0, 0, 0, 0);
@@ -553,17 +550,17 @@ export function getCostSummary(apiKeyId: string): BudgetSummary {
 
   try {
     const dailyEntries = [
-      ...toCostEntries(loadCostEntries(apiKeyId, todayStart.getTime())),
+      ...toCostEntries(await loadCostEntries(apiKeyId, todayStart.getTime())),
       ...spendBatchWriter.getBufferedEntries(apiKeyId, todayStart.getTime()),
     ];
     const monthlyEntries = [
-      ...toCostEntries(loadCostEntries(apiKeyId, monthStart.getTime())),
+      ...toCostEntries(await loadCostEntries(apiKeyId, monthStart.getTime())),
       ...spendBatchWriter.getBufferedEntries(apiKeyId, monthStart.getTime()),
     ];
     const periodEntries =
       window !== null
         ? [
-            ...toCostEntries(loadCostEntries(apiKeyId, window.periodStartAt)),
+            ...toCostEntries(await loadCostEntries(apiKeyId, window.periodStartAt)),
             ...spendBatchWriter.getBufferedEntries(apiKeyId, window.periodStartAt),
           ]
         : [];
@@ -623,9 +620,7 @@ export function getCostSummary(apiKeyId: string): BudgetSummary {
 export function resetCostData() {
   budgets.clear();
   resetSpendBatchWriterForTests();
-  try {
-    deleteAllCostData();
-  } catch {
+  deleteAllCostData().catch(() => {
     // Non-critical.
-  }
+  });
 }

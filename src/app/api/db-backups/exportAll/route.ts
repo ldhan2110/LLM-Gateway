@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
       await db.backup(dbBackupPath);
 
       // 2–5. Export settings, combos, provider connections, API keys (via db module)
-      const { settings, combos, providers, apiKeys } = exportAllSummaryRows();
+      const { settings, combos, providers, apiKeys } = await exportAllSummaryRows();
       fs.writeFileSync(path.join(tempDir, "settings.json"), JSON.stringify(settings, null, 2));
       fs.writeFileSync(path.join(tempDir, "combos.json"), JSON.stringify(combos, null, 2));
       fs.writeFileSync(path.join(tempDir, "providers.json"), JSON.stringify(providers, null, 2));

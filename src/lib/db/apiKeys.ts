@@ -4,13 +4,11 @@
 
 import { createHash } from "crypto";
 import { v4 as uuidv4 } from "uuid";
-import { getDbInstance, rowToCamel } from "./core";
+import { getDbClient, rowToCamel } from "./core";
 import { backupDbFile } from "./backup";
 import { registerDbStateResetter } from "./stateReset";
 import { getKeyGroupsForApiKey, checkKeyModelAccess } from "./apiKeyGroups";
-import { API_KEY_COLUMN_FALLBACKS } from "./apiKeyColumnFallbacks";
 import {
-  appendUsageLimitUpdates,
   hasUsageLimitUpdate,
   parseApiKeyUsageLimitFields,
 } from "./apiKeyUsageLimitFields";
@@ -47,9 +45,6 @@ import {
 import type { AccessSchedule, RateLimitRule } from "./apiKeys/types";
 
 // ──────────────── Performance Optimizations ────────────────
-
-// Schema check memoization - only run once
-let _schemaChecked = false;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -136,25 +131,6 @@ interface ApiKeyRow extends JsonRecord {
   weeklyUsageLimitUsd?: unknown;
 }
 
-interface StatementLike<TRow = unknown> {
-  all: (...params: unknown[]) => TRow[];
-  get: (...params: unknown[]) => TRow | undefined;
-  run: (...params: unknown[]) => { changes?: number };
-}
-
-interface ApiKeysDbLike {
-  prepare: <TRow = unknown>(sql: string) => StatementLike<TRow>;
-  exec: (sql: string) => void;
-}
-
-interface ApiKeysStatements {
-  getAllKeys: StatementLike<ApiKeyRow>;
-  getKeyById: StatementLike<ApiKeyRow>;
-  validateKey: StatementLike<JsonRecord>;
-  getKeyMetadata: StatementLike<ApiKeyRow>;
-  insertKey: StatementLike;
-  deleteKey: StatementLike;
-}
 
 interface ApiKeyView extends JsonRecord {
   id?: string;
@@ -196,13 +172,6 @@ const MAX_CACHE_SIZE = 1000;
 // Cache for model permission checks
 const _modelPermissionCache = new Map<string, { allowed: boolean; timestamp: number }>();
 
-// Prepared statements cache
-let _stmtGetAllKeys: ApiKeysStatements["getAllKeys"] | null = null;
-let _stmtGetKeyById: ApiKeysStatements["getKeyById"] | null = null;
-let _stmtValidateKey: ApiKeysStatements["validateKey"] | null = null;
-let _stmtGetKeyMetadata: ApiKeysStatements["getKeyMetadata"] | null = null;
-let _stmtInsertKey: ApiKeysStatements["insertKey"] | null = null;
-let _stmtDeleteKey: ApiKeysStatements["deleteKey"] | null = null;
 
 /**
  * Clear all caches (called on key create/update/delete)
@@ -248,25 +217,29 @@ async function deleteRedisAuthCacheEntries(...keyHashes: unknown[]): Promise<voi
   await Promise.all(keyHashes.map((keyHash) => deleteRedisAuthCacheEntry(keyHash)));
 }
 
-async function deleteRedisAuthCacheForKeyId(db: ApiKeysDbLike, id: string): Promise<void> {
+async function deleteRedisAuthCacheForKeyId(id: string): Promise<void> {
   if (!isRedisAuthCacheEnabled()) return;
 
-  const row = db
-    .prepare<{ key_hash: string | null }>("SELECT key_hash FROM api_keys WHERE id = ?")
-    .get(id);
+  const db = getDbClient();
+  const row = await db.get<{ key_hash: string | null }>(
+    "SELECT key_hash FROM api_keys WHERE id = ?",
+    id
+  );
   await deleteRedisAuthCacheEntry(row?.key_hash);
 }
 
-function markApiKeyUsed(db: ApiKeysDbLike, id: unknown, now: number): void {
+async function markApiKeyUsed(id: unknown, now: number): Promise<void> {
   if (typeof id !== "string" || id.trim() === "") return;
 
   const lastUpdate = _lastUsedUpdateCache.get(id);
   if (lastUpdate && now - lastUpdate < LAST_USED_UPDATE_TTL) return;
 
-  db.prepare("UPDATE api_keys SET last_used_at = @lastUsedAt WHERE id = @id").run({
-    id,
-    lastUsedAt: new Date(now).toISOString(),
-  });
+  const db = getDbClient();
+  await db.run(
+    "UPDATE api_keys SET last_used_at = ? WHERE id = ?",
+    new Date(now).toISOString(),
+    id
+  );
   _lastUsedUpdateCache.set(id, now);
 }
 
@@ -342,90 +315,10 @@ async function getPublishedModelLookupTarget(
   return null;
 }
 
-function ensureApiKeyColumn(
-  db: ApiKeysDbLike,
-  columnNames: Set<string>,
-  column: (typeof API_KEY_COLUMN_FALLBACKS)[number]
-): void {
-  if (columnNames.has(column.name)) return;
-  db.exec(`ALTER TABLE api_keys ADD COLUMN ${column.definition}`);
-  console.log(`[DB] Added api_keys.${column.name} column`);
-}
-
-// Ensure api_keys extension columns exist (memoized)
-function ensureApiKeysColumns(db: ApiKeysDbLike) {
-  if (_schemaChecked) return;
-
-  try {
-    const columns = db.prepare<ApiKeyRow>("PRAGMA table_info(api_keys)").all();
-    const columnNames = new Set(columns.map((column) => String(column.name ?? "")));
-    for (const column of API_KEY_COLUMN_FALLBACKS) {
-      ensureApiKeyColumn(db, columnNames, column);
-    }
-    _schemaChecked = true;
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn("[DB] Failed to verify api_keys schema:", message);
-  }
-}
-
-/**
- * Initialize prepared statements (lazy initialization)
- * Re-creates statements if the underlying DB connection changed (HMR, backup restore).
- */
-let _stmtDb: ApiKeysDbLike | null = null;
-function getPreparedStatements(db: ApiKeysDbLike): ApiKeysStatements {
-  ensureApiKeysColumns(db);
-
-  if (
-    !_stmtGetAllKeys ||
-    !_stmtGetKeyById ||
-    !_stmtValidateKey ||
-    !_stmtGetKeyMetadata ||
-    !_stmtInsertKey ||
-    !_stmtDeleteKey ||
-    _stmtDb !== db
-  ) {
-    _stmtDb = db;
-    _stmtGetAllKeys = db.prepare<ApiKeyRow>("SELECT * FROM api_keys ORDER BY created_at");
-    _stmtGetKeyById = db.prepare<ApiKeyRow>("SELECT * FROM api_keys WHERE id = ?");
-    _stmtValidateKey = db.prepare<JsonRecord>(
-      "SELECT id, expires_at, revoked_at, is_active, is_banned FROM api_keys WHERE key = ? OR key_hash = ?"
-    );
-    _stmtGetKeyMetadata = db.prepare<ApiKeyRow>(
-      "SELECT id, name, machine_id, allowed_models, blocked_models, allowed_combos, allowed_connections, allowed_quotas, no_log, auto_resolve, is_active, access_schedule, max_requests_per_day, max_requests_per_minute, throttle_delay_ms, max_sessions, revoked_at, expires_at, ip_allowlist, scopes, rate_limits, is_banned, key_hash, allowed_endpoints, stream_default_mode, disable_non_public_models, allow_usage_command, usage_limit_enabled, daily_usage_limit_usd, weekly_usage_limit_usd, proxy_id FROM api_keys WHERE key = ? OR key_hash = ?"
-    );
-    _stmtInsertKey = db.prepare(
-      "INSERT INTO api_keys (id, name, key, machine_id, allowed_models, no_log, created_at, key_prefix, key_hash, scopes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    );
-    _stmtDeleteKey = db.prepare("DELETE FROM api_keys WHERE id = ?");
-  }
-
-  if (
-    !_stmtGetAllKeys ||
-    !_stmtGetKeyById ||
-    !_stmtValidateKey ||
-    !_stmtGetKeyMetadata ||
-    !_stmtInsertKey ||
-    !_stmtDeleteKey
-  ) {
-    throw new Error("Failed to initialize API key prepared statements");
-  }
-
-  return {
-    getAllKeys: _stmtGetAllKeys,
-    getKeyById: _stmtGetKeyById,
-    validateKey: _stmtValidateKey,
-    getKeyMetadata: _stmtGetKeyMetadata,
-    insertKey: _stmtInsertKey,
-    deleteKey: _stmtDeleteKey,
-  };
-}
 
 export async function getApiKeys() {
-  const db = getDbInstance() as ApiKeysDbLike;
-  const stmt = getPreparedStatements(db);
-  const rows = stmt.getAllKeys.all();
+  const db = getDbClient();
+  const rows = await db.all<ApiKeyRow>("SELECT * FROM api_keys ORDER BY created_at");
   return rows.map((row) => {
     const camelRow = toRecord(rowToCamel(row)) as ApiKeyView;
     camelRow.allowedModels = parseAllowedModels(camelRow.allowedModels);
@@ -455,9 +348,8 @@ export async function getApiKeys() {
 }
 
 export async function getApiKeyById(id: string) {
-  const db = getDbInstance() as ApiKeysDbLike;
-  const stmt = getPreparedStatements(db);
-  const row = stmt.getKeyById.get(id);
+  const db = getDbClient();
+  const row = await db.get<ApiKeyRow>("SELECT * FROM api_keys WHERE id = ?", id);
   if (!row) return null;
   const camelRow = toRecord(rowToCamel(row)) as ApiKeyView;
   camelRow.allowedModels = parseAllowedModels(camelRow.allowedModels);
@@ -500,7 +392,7 @@ export async function createApiKey(name: string, machineId: string, scopes: stri
     throw new Error("machineId is required");
   }
 
-  const db = getDbInstance() as ApiKeysDbLike;
+  const db = getDbClient();
   const now = new Date().toISOString();
 
   const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
@@ -520,8 +412,8 @@ export async function createApiKey(name: string, machineId: string, scopes: stri
     scopes,
   };
 
-  const stmt = getPreparedStatements(db);
-  stmt.insertKey.run(
+  await db.run(
+    "INSERT INTO api_keys (id, name, key, machine_id, allowed_models, no_log, created_at, key_prefix, key_hash, scopes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     apiKey.id,
     apiKey.name,
     apiKey.key,
@@ -540,9 +432,8 @@ export async function createApiKey(name: string, machineId: string, scopes: stri
 }
 
 export async function regenerateApiKey(id: string) {
-  const db = getDbInstance() as ApiKeysDbLike;
-  const stmt = getPreparedStatements(db);
-  const row = stmt.getKeyById.get(id) as ApiKeyRow | undefined;
+  const db = getDbClient();
+  const row = await db.get<ApiKeyRow>("SELECT * FROM api_keys WHERE id = ?", id);
   if (!row) return null;
 
   const { generateApiKeyWithMachine } = await import("@/shared/utils/apiKey");
@@ -552,21 +443,24 @@ export async function regenerateApiKey(id: string) {
   const newPrefix = newKey.slice(0, 12);
 
   // Update in DB
-  const updateStmt = db.prepare(
-    "UPDATE api_keys SET key = ?, key_hash = ?, key_prefix = ? WHERE id = ?"
+  await db.run(
+    "UPDATE api_keys SET key = ?, key_hash = ?, key_prefix = ? WHERE id = ?",
+    newKey,
+    newHash,
+    newPrefix,
+    id
   );
-  updateStmt.run(newKey, newHash, newPrefix, id);
 
   // Invalidate all caches
   clearApiKeyCaches();
 
-  await deleteRedisAuthCacheEntries(row.key_hash, newHash);
+  await deleteRedisAuthCacheEntries(row?.key_hash, newHash);
 
   const { logAuditEvent } = await import("@/lib/compliance");
   logAuditEvent({
     action: "apiKey.regenerate",
     target: id,
-    details: { name: String(row.name || "") },
+    details: { name: String(row?.name || "") },
   });
 
   return { id, key: newKey };
@@ -606,8 +500,7 @@ export async function updateApiKeyPermissions(
         weeklyUsageLimitUsd?: number | null;
       }
 ) {
-  const db = getDbInstance() as ApiKeysDbLike;
-  getPreparedStatements(db);
+  const db = getDbClient();
 
   const normalized =
     Array.isArray(update) || update === undefined
@@ -673,165 +566,151 @@ export async function updateApiKeyPermissions(
     return false;
   }
 
-  const updates: string[] = [];
-  const params: {
-    id: string;
-    name?: string;
-    allowedModels?: string;
-    blockedModels?: string;
-    allowedCombos?: string;
-    allowedConnections?: string;
-    allowedQuotas?: string;
-    noLog?: number;
-    autoResolve?: number;
-    isActive?: number;
-    accessSchedule?: string | null;
-    maxRequestsPerDay?: number | null;
-    maxRequestsPerMinute?: number | null;
-    throttleDelayMs?: number | null;
-    rateLimits?: string | null;
-    isBanned?: number;
-    maxSessions?: number;
-    expiresAt?: string | null;
-    scopes?: string;
-    proxyId?: string | null;
-    streamDefaultMode?: "legacy" | "json";
-    disableNonPublicModels?: number;
-    allowUsageCommand?: number;
-    usageLimitEnabled?: number;
-    dailyUsageLimitUsd?: number | null;
-    weeklyUsageLimitUsd?: number | null;
-  } = { id };
+  const setClauses: string[] = [];
+  const values: unknown[] = [];
 
   if (normalized.name !== undefined) {
-    updates.push("name = @name");
-    params.name = normalized.name;
+    setClauses.push("name = ?");
+    values.push(normalized.name);
   }
 
   if (normalized.allowedModels !== undefined) {
     // Empty array means all models are allowed
-    updates.push("allowed_models = @allowedModels");
-    params.allowedModels = JSON.stringify(normalized.allowedModels || []);
+    setClauses.push("allowed_models = ?");
+    values.push(JSON.stringify(normalized.allowedModels || []));
   }
 
   if (normalized.blockedModels !== undefined) {
     // Deny-list patterns always take precedence over allowed_models.
-    updates.push("blocked_models = @blockedModels");
-    params.blockedModels = JSON.stringify(normalized.blockedModels || []);
+    setClauses.push("blocked_models = ?");
+    values.push(JSON.stringify(normalized.blockedModels || []));
   }
 
   if (normalized.allowedCombos !== undefined) {
     // Empty array means no explicit combo restriction; legacy allowed_models rules still apply.
-    updates.push("allowed_combos = @allowedCombos");
-    params.allowedCombos = JSON.stringify(normalized.allowedCombos || []);
+    setClauses.push("allowed_combos = ?");
+    values.push(JSON.stringify(normalized.allowedCombos || []));
   }
 
   if (normalized.allowedConnections !== undefined) {
     // Empty array means all connections are allowed
-    updates.push("allowed_connections = @allowedConnections");
-    params.allowedConnections = JSON.stringify(normalized.allowedConnections || []);
+    setClauses.push("allowed_connections = ?");
+    values.push(JSON.stringify(normalized.allowedConnections || []));
   }
 
   const allowedQuotasUpdate = (normalized as Record<string, unknown>).allowedQuotas;
   if (allowedQuotasUpdate !== undefined) {
     // Empty array means no quota-pool restriction; non-empty restricts to listed pools
-    updates.push("allowed_quotas = @allowedQuotas");
+    setClauses.push("allowed_quotas = ?");
     const nextQuotas: string[] = Array.isArray(allowedQuotasUpdate)
       ? (allowedQuotasUpdate as unknown[]).filter((s): s is string => typeof s === "string")
       : [];
-    params.allowedQuotas = JSON.stringify(nextQuotas);
+    values.push(JSON.stringify(nextQuotas));
   }
 
   if (normalized.noLog !== undefined) {
-    updates.push("no_log = @noLog");
-    params.noLog = normalized.noLog ? 1 : 0;
+    setClauses.push("no_log = ?");
+    values.push(normalized.noLog ? 1 : 0);
   }
 
   if (normalized.autoResolve !== undefined) {
-    updates.push("auto_resolve = @autoResolve");
-    params.autoResolve = normalized.autoResolve ? 1 : 0;
+    setClauses.push("auto_resolve = ?");
+    values.push(normalized.autoResolve ? 1 : 0);
   }
 
   if (normalized.isActive !== undefined) {
-    updates.push("is_active = @isActive");
-    params.isActive = normalized.isActive ? 1 : 0;
+    setClauses.push("is_active = ?");
+    values.push(normalized.isActive ? 1 : 0);
   }
 
   if (normalized.accessSchedule !== undefined) {
-    updates.push("access_schedule = @accessSchedule");
-    params.accessSchedule =
-      normalized.accessSchedule !== null ? JSON.stringify(normalized.accessSchedule) : null;
+    setClauses.push("access_schedule = ?");
+    values.push(
+      normalized.accessSchedule !== null ? JSON.stringify(normalized.accessSchedule) : null
+    );
   }
 
   if (normalized.maxRequestsPerDay !== undefined) {
-    updates.push("max_requests_per_day = @maxRequestsPerDay");
-    params.maxRequestsPerDay = normalized.maxRequestsPerDay;
+    setClauses.push("max_requests_per_day = ?");
+    values.push(normalized.maxRequestsPerDay);
   }
 
   if (normalized.maxRequestsPerMinute !== undefined) {
-    updates.push("max_requests_per_minute = @maxRequestsPerMinute");
-    params.maxRequestsPerMinute = normalized.maxRequestsPerMinute;
+    setClauses.push("max_requests_per_minute = ?");
+    values.push(normalized.maxRequestsPerMinute);
   }
 
   if (normalized.throttleDelayMs !== undefined) {
-    updates.push("throttle_delay_ms = @throttleDelayMs");
-    params.throttleDelayMs = normalized.throttleDelayMs;
+    setClauses.push("throttle_delay_ms = ?");
+    values.push(normalized.throttleDelayMs);
   }
 
   if (normalized.rateLimits !== undefined) {
-    updates.push("rate_limits = @rateLimits");
-    params.rateLimits =
-      normalized.rateLimits !== null ? JSON.stringify(normalized.rateLimits) : null;
+    setClauses.push("rate_limits = ?");
+    values.push(normalized.rateLimits !== null ? JSON.stringify(normalized.rateLimits) : null);
   }
 
   if (normalized.isBanned !== undefined) {
-    updates.push("is_banned = @isBanned");
-    params.isBanned = normalized.isBanned ? 1 : 0;
+    setClauses.push("is_banned = ?");
+    values.push(normalized.isBanned ? 1 : 0);
   }
 
   if (normalized.expiresAt !== undefined) {
-    updates.push("expires_at = @expiresAt");
-    params.expiresAt = normalized.expiresAt;
+    setClauses.push("expires_at = ?");
+    values.push(normalized.expiresAt);
   }
 
   if (normalized.disableNonPublicModels !== undefined) {
-    updates.push("disable_non_public_models = @disableNonPublicModels");
-    params.disableNonPublicModels = normalized.disableNonPublicModels ? 1 : 0;
+    setClauses.push("disable_non_public_models = ?");
+    values.push(normalized.disableNonPublicModels ? 1 : 0);
   }
 
   if (normalized.allowUsageCommand !== undefined) {
-    updates.push("allow_usage_command = @allowUsageCommand");
-    params.allowUsageCommand = normalized.allowUsageCommand ? 1 : 0;
+    setClauses.push("allow_usage_command = ?");
+    values.push(normalized.allowUsageCommand ? 1 : 0);
   }
 
-  appendUsageLimitUpdates(normalized as Record<string, unknown>, updates, params);
+  const usageLimitRecord = normalized as Record<string, unknown>;
+  if (usageLimitRecord.usageLimitEnabled !== undefined) {
+    setClauses.push("usage_limit_enabled = ?");
+    values.push(usageLimitRecord.usageLimitEnabled ? 1 : 0);
+  }
+  if (usageLimitRecord.dailyUsageLimitUsd !== undefined) {
+    setClauses.push("daily_usage_limit_usd = ?");
+    values.push(usageLimitRecord.dailyUsageLimitUsd ?? null);
+  }
+  if (usageLimitRecord.weeklyUsageLimitUsd !== undefined) {
+    setClauses.push("weekly_usage_limit_usd = ?");
+    values.push(usageLimitRecord.weeklyUsageLimitUsd ?? null);
+  }
 
   const maxSessionsUpdate = (normalized as Record<string, unknown>).maxSessions;
   if (maxSessionsUpdate !== undefined) {
-    updates.push("max_sessions = @maxSessions");
-    params.maxSessions = typeof maxSessionsUpdate === "number" ? Math.max(0, maxSessionsUpdate) : 0;
+    setClauses.push("max_sessions = ?");
+    values.push(typeof maxSessionsUpdate === "number" ? Math.max(0, maxSessionsUpdate) : 0);
   }
 
   const proxyIdUpdate = (normalized as Record<string, unknown>).proxyId;
   if (proxyIdUpdate !== undefined) {
-    updates.push("proxy_id = @proxyId");
-    params.proxyId =
-      typeof proxyIdUpdate === "string" && proxyIdUpdate.trim() !== "" ? proxyIdUpdate : null;
+    setClauses.push("proxy_id = ?");
+    values.push(
+      typeof proxyIdUpdate === "string" && proxyIdUpdate.trim() !== "" ? proxyIdUpdate : null
+    );
   }
 
   const allowedEndpointsUpdate = (normalized as Record<string, unknown>).allowedEndpoints;
   if (allowedEndpointsUpdate !== undefined) {
-    updates.push("allowed_endpoints = @allowedEndpoints");
+    setClauses.push("allowed_endpoints = ?");
     const nextEndpoints: string[] = Array.isArray(allowedEndpointsUpdate)
       ? (allowedEndpointsUpdate as unknown[]).filter((s): s is string => typeof s === "string")
       : [];
-    (params as Record<string, unknown>).allowedEndpoints = JSON.stringify(nextEndpoints);
+    values.push(JSON.stringify(nextEndpoints));
   }
 
   const streamDefaultModeUpdate = (normalized as Record<string, unknown>).streamDefaultMode;
   if (streamDefaultModeUpdate !== undefined) {
-    updates.push("stream_default_mode = @streamDefaultMode");
-    params.streamDefaultMode = parseStreamDefaultMode(streamDefaultModeUpdate);
+    setClauses.push("stream_default_mode = ?");
+    values.push(parseStreamDefaultMode(streamDefaultModeUpdate));
   }
 
   const scopesUpdate = (normalized as Record<string, unknown>).scopes;
@@ -842,49 +721,31 @@ export async function updateApiKeyPermissions(
   // event below. We only fetch when the caller is actually changing scopes —
   // a privileged change ("manage" grants management API surface access) that
   // must always leave an audit trail per OWASP A09 / SOC2 CC7.2.
-  //
-  // The previous-scopes SELECT and the row UPDATE are wrapped in a single
-  // transaction so a concurrent writer cannot slip in between and make the
-  // audit log lie about what changed. SQLite is single-writer in practice,
-  // but the transaction also gives us atomicity if the underlying driver
-  // ever swaps to a backend that allows multiple writers (sqljsAdapter /
-  // nodeSqliteAdapter fall-back per v3.8.1 db driver cascade).
   let previousScopes: string[] = [];
   let changedRows = 0;
   if (scopesUpdate !== undefined) {
-    updates.push("scopes = @scopes");
-    params.scopes = JSON.stringify(nextScopes);
+    setClauses.push("scopes = ?");
+    values.push(JSON.stringify(nextScopes));
 
-    // SELECT-then-UPDATE wrapped in an explicit transaction so a concurrent
-    // writer can't slip between the read and the write and make the audit
-    // log lie about what changed. `exec("BEGIN"/"COMMIT")` works across all
-    // driver backends (better-sqlite3 / node:sqlite / sql.js) wired by the
-    // v3.8.1 db driver cascade — none of them expose `db.transaction()` via
-    // ApiKeysDbLike, which is intentionally minimal.
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const prevRow = db
-        .prepare<{ scopes: string | null }>("SELECT scopes FROM api_keys WHERE id = ?")
-        .get(id);
+    await db.immediate(async (c) => {
+      const prevRow = await c.get<{ scopes: string | null }>(
+        "SELECT scopes FROM api_keys WHERE id = ?",
+        id
+      );
       previousScopes = parseStringList(prevRow?.scopes ?? null);
-      const upd = db
-        .prepare(`UPDATE api_keys SET ${updates.join(", ")} WHERE id = @id`)
-        .run(params);
+      const upd = await c.run(
+        `UPDATE api_keys SET ${setClauses.join(", ")} WHERE id = ?`,
+        ...values,
+        id
+      );
       changedRows = upd.changes ?? 0;
-      db.exec("COMMIT");
-    } catch (err) {
-      // Guard the ROLLBACK: if it throws (e.g. transaction already ended
-      // due to an implicit commit, or backend in a bad state), the original
-      // error from the try block is the actionable one — don't shadow it.
-      try {
-        db.exec("ROLLBACK");
-      } catch {
-        // swallow: original error is more important
-      }
-      throw err;
-    }
+    });
   } else {
-    const upd = db.prepare(`UPDATE api_keys SET ${updates.join(", ")} WHERE id = @id`).run(params);
+    const upd = await db.run(
+      `UPDATE api_keys SET ${setClauses.join(", ")} WHERE id = ?`,
+      ...values,
+      id
+    );
     changedRows = upd.changes ?? 0;
   }
 
@@ -945,22 +806,21 @@ export async function updateApiKeyPermissions(
   // Invalidate caches since permissions changed
   invalidateCaches();
 
-  await deleteRedisAuthCacheForKeyId(db, id);
+  await deleteRedisAuthCacheForKeyId(id);
 
   backupDbFile("pre-write");
   return true;
 }
 
 export async function deleteApiKey(id: string) {
-  const db = getDbInstance() as ApiKeysDbLike;
-  const stmt = getPreparedStatements(db);
-  const row = stmt.getKeyById.get(id) as ApiKeyRow | undefined;
-  const result = stmt.deleteKey.run(id);
+  const db = getDbClient();
+  const row = await db.get<ApiKeyRow>("SELECT * FROM api_keys WHERE id = ?", id);
+  const result = await db.run("DELETE FROM api_keys WHERE id = ?", id);
 
   if (result.changes === 0) return false;
 
-  db.prepare("DELETE FROM domain_budgets WHERE api_key_id = ?").run(id);
-  db.prepare("DELETE FROM domain_cost_history WHERE api_key_id = ?").run(id);
+  await db.run("DELETE FROM domain_budgets WHERE api_key_id = ?", id);
+  await db.run("DELETE FROM domain_cost_history WHERE api_key_id = ?", id);
   setNoLog(id, false);
 
   // Invalidate caches since a key was removed
@@ -977,19 +837,18 @@ export async function deleteApiKey(id: string) {
  * (or sooner because invalidateCaches() runs here).
  */
 export async function revokeApiKey(id: string): Promise<boolean> {
-  const db = getDbInstance() as ApiKeysDbLike;
-  getPreparedStatements(db);
+  const db = getDbClient();
 
-  const result = db
-    .prepare(
-      "UPDATE api_keys SET revoked_at = COALESCE(revoked_at, @ts), is_active = 0 WHERE id = @id"
-    )
-    .run({ id, ts: new Date().toISOString() });
+  const result = await db.run(
+    "UPDATE api_keys SET revoked_at = COALESCE(revoked_at, ?), is_active = 0 WHERE id = ?",
+    new Date().toISOString(),
+    id
+  );
 
   if ((result.changes ?? 0) === 0) return false;
 
   invalidateCaches();
-  await deleteRedisAuthCacheForKeyId(db, id);
+  await deleteRedisAuthCacheForKeyId(id);
   backupDbFile("pre-write");
   return true;
 }
@@ -998,17 +857,18 @@ export async function revokeApiKey(id: string): Promise<boolean> {
  * Set or clear the expiry of an API key. Pass null to remove the expiry.
  */
 export async function setApiKeyExpiry(id: string, expiresAt: string | null): Promise<boolean> {
-  const db = getDbInstance() as ApiKeysDbLike;
-  getPreparedStatements(db);
+  const db = getDbClient();
 
-  const result = db
-    .prepare("UPDATE api_keys SET expires_at = @expiresAt WHERE id = @id")
-    .run({ id, expiresAt });
+  const result = await db.run(
+    "UPDATE api_keys SET expires_at = ? WHERE id = ?",
+    expiresAt,
+    id
+  );
 
   if ((result.changes ?? 0) === 0) return false;
 
   invalidateCaches();
-  await deleteRedisAuthCacheForKeyId(db, id);
+  await deleteRedisAuthCacheForKeyId(id);
   backupDbFile("pre-write");
   return true;
 }
@@ -1070,9 +930,12 @@ export async function validateApiKey(key: string | null | undefined) {
     }
   }
 
-  const db = getDbInstance() as ApiKeysDbLike;
-  const stmt = getPreparedStatements(db);
-  const row = stmt.validateKey.get(key, hashedKey) as JsonRecord | undefined;
+  const db = getDbClient();
+  const row = await db.get<JsonRecord>(
+    "SELECT id, expires_at, revoked_at, is_active, is_banned FROM api_keys WHERE key = ? OR key_hash = ?",
+    key,
+    hashedKey
+  );
 
   if (!row) return false;
 
@@ -1119,7 +982,7 @@ export async function validateApiKey(key: string | null | undefined) {
     }
   }
 
-  markApiKeyUsed(db, row.id, now);
+  await markApiKeyUsed(row.id, now);
 
   return true;
 }
@@ -1200,9 +1063,12 @@ export async function getApiKeyMetadata(
     return cached.value;
   }
 
-  const db = getDbInstance() as ApiKeysDbLike;
-  const stmt = getPreparedStatements(db);
-  const row = stmt.getKeyMetadata.get(key, hashedKey);
+  const db = getDbClient();
+  const row = await db.get<ApiKeyRow>(
+    "SELECT id, name, machine_id, allowed_models, blocked_models, allowed_combos, allowed_connections, allowed_quotas, no_log, auto_resolve, is_active, access_schedule, max_requests_per_day, max_requests_per_minute, throttle_delay_ms, max_sessions, revoked_at, expires_at, ip_allowlist, scopes, rate_limits, is_banned, key_hash, allowed_endpoints, stream_default_mode, disable_non_public_models, allow_usage_command, usage_limit_enabled, daily_usage_limit_usd, weekly_usage_limit_usd, proxy_id FROM api_keys WHERE key = ? OR key_hash = ?",
+    key,
+    hashedKey
+  );
 
   if (!row) return null;
 
@@ -1362,7 +1228,7 @@ export async function isModelAllowedForKey(
 
   // If key belongs to groups, also check group-level permissions
   if (metadata.id) {
-    const groupAccess = checkKeyModelAccess(metadata.id, modelId || "");
+    const groupAccess = await checkKeyModelAccess(metadata.id, modelId || "");
     if (!groupAccess.allowed) {
       allowed = false;
     }
@@ -1374,21 +1240,6 @@ export async function isModelAllowedForKey(
   }
 
   return allowed;
-}
-
-/**
- * Clear prepared statements cache (called on database reset/restore)
- * Prepared statements are bound to a specific database connection,
- * so they must be cleared when the connection is reset.
- */
-function clearPreparedStatementCache() {
-  _stmtGetAllKeys = null;
-  _stmtGetKeyById = null;
-  _stmtValidateKey = null;
-  _stmtGetKeyMetadata = null;
-  _stmtInsertKey = null;
-  _stmtDeleteKey = null;
-  _schemaChecked = false; // Also reset schema check for new connection
 }
 
 /**
@@ -1405,7 +1256,6 @@ export function clearApiKeyCaches() {
  * Called by backup.ts when the database is restored.
  */
 export function resetApiKeyState() {
-  clearPreparedStatementCache();
   clearApiKeyCaches();
 }
 

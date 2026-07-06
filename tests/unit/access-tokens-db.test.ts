@@ -22,8 +22,8 @@ test.after(() => {
   } catch {}
 });
 
-test("createAccessToken returns a secret prefixed oma_live_ and a masked record", () => {
-  const { record, secret } = at.createAccessToken({ name: "laptop", scope: "write" });
+test("createAccessToken returns a secret prefixed oma_live_ and a masked record", async () => {
+  const { record, secret } = await at.createAccessToken({ name: "laptop", scope: "write" });
   assert.match(secret, /^oma_live_/);
   assert.equal(record.name, "laptop");
   assert.equal(record.scope, "write");
@@ -32,28 +32,31 @@ test("createAccessToken returns a secret prefixed oma_live_ and a masked record"
   assert.equal(record.revokedAt, null);
 });
 
-test("createAccessToken defaults to the safest scope (read) for invalid input", () => {
-  const { record } = at.createAccessToken({ name: "x", scope: "bogus" });
+test("createAccessToken defaults to the safest scope (read) for invalid input", async () => {
+  const { record } = await at.createAccessToken({ name: "x", scope: "bogus" });
   assert.equal(record.scope, "read");
 });
 
-test("createAccessToken rejects an empty name", () => {
-  assert.throws(() => at.createAccessToken({ name: "   ", scope: "read" }), /name is required/);
+test("createAccessToken rejects an empty name", async () => {
+  await assert.rejects(
+    () => at.createAccessToken({ name: "   ", scope: "read" }),
+    /name is required/
+  );
 });
 
-test("verifyAccessToken returns identity+scope for a valid secret, null for wrong", () => {
-  const { secret } = at.createAccessToken({ name: "verify-me", scope: "admin" });
-  const v = at.verifyAccessToken(secret);
+test("verifyAccessToken returns identity+scope for a valid secret, null for wrong", async () => {
+  const { secret } = await at.createAccessToken({ name: "verify-me", scope: "admin" });
+  const v = await at.verifyAccessToken(secret);
   assert.ok(v);
   assert.equal(v?.scope, "admin");
   assert.equal(v?.name, "verify-me");
-  assert.equal(at.verifyAccessToken("oma_live_wrong"), null);
-  assert.equal(at.verifyAccessToken(""), null);
-  assert.equal(at.verifyAccessToken(null), null);
+  assert.equal(await at.verifyAccessToken("oma_live_wrong"), null);
+  assert.equal(await at.verifyAccessToken(""), null);
+  assert.equal(await at.verifyAccessToken(null), null);
 });
 
-test("only the hash is stored — the plaintext secret never lands in the DB", () => {
-  const { secret, record } = at.createAccessToken({ name: "secrecy", scope: "read" });
+test("only the hash is stored — the plaintext secret never lands in the DB", async () => {
+  const { secret, record } = await at.createAccessToken({ name: "secrecy", scope: "read" });
   const db = core.getDbInstance();
   const row = db
     .prepare("SELECT token_hash, token_prefix FROM cli_access_tokens WHERE id = ?")
@@ -63,37 +66,41 @@ test("only the hash is stored — the plaintext secret never lands in the DB", (
   assert.equal(row.token_hash.length, 64, "sha-256 hex");
 });
 
-test("verifyAccessToken stamps last_used_at", () => {
-  const { secret, record } = at.createAccessToken({ name: "touch", scope: "read" });
-  assert.equal(at.getAccessToken(record.id)?.lastUsedAt, null);
-  at.verifyAccessToken(secret);
-  assert.notEqual(at.getAccessToken(record.id)?.lastUsedAt, null);
+test("verifyAccessToken stamps last_used_at", async () => {
+  const { secret, record } = await at.createAccessToken({ name: "touch", scope: "read" });
+  assert.equal((await at.getAccessToken(record.id))?.lastUsedAt, null);
+  await at.verifyAccessToken(secret);
+  assert.notEqual((await at.getAccessToken(record.id))?.lastUsedAt, null);
 });
 
-test("revoked tokens fail verification", () => {
-  const { secret, record } = at.createAccessToken({ name: "to-revoke", scope: "write" });
-  assert.ok(at.verifyAccessToken(secret));
-  assert.equal(at.revokeAccessToken(record.id), true);
-  assert.equal(at.verifyAccessToken(secret), null);
+test("revoked tokens fail verification", async () => {
+  const { secret, record } = await at.createAccessToken({ name: "to-revoke", scope: "write" });
+  assert.ok(await at.verifyAccessToken(secret));
+  assert.equal(await at.revokeAccessToken(record.id), true);
+  assert.equal(await at.verifyAccessToken(secret), null);
   // idempotent: revoking again is a no-op
-  assert.equal(at.revokeAccessToken(record.id), false);
+  assert.equal(await at.revokeAccessToken(record.id), false);
 });
 
-test("revokeAccessToken works by display prefix too", () => {
-  const { secret, record } = at.createAccessToken({ name: "by-prefix", scope: "read" });
-  assert.equal(at.revokeAccessToken(record.tokenPrefix), true);
-  assert.equal(at.verifyAccessToken(secret), null);
+test("revokeAccessToken works by display prefix too", async () => {
+  const { secret, record } = await at.createAccessToken({ name: "by-prefix", scope: "read" });
+  assert.equal(await at.revokeAccessToken(record.tokenPrefix), true);
+  assert.equal(await at.verifyAccessToken(secret), null);
 });
 
-test("expired tokens fail verification", () => {
+test("expired tokens fail verification", async () => {
   const past = new Date(Date.now() - 60_000).toISOString();
-  const { secret } = at.createAccessToken({ name: "expired", scope: "admin", expiresAt: past });
-  assert.equal(at.verifyAccessToken(secret), null);
+  const { secret } = await at.createAccessToken({
+    name: "expired",
+    scope: "admin",
+    expiresAt: past,
+  });
+  assert.equal(await at.verifyAccessToken(secret), null);
 });
 
-test("listAccessTokens returns masked records (no secret/hash field)", () => {
-  at.createAccessToken({ name: "listed", scope: "read" });
-  const list = at.listAccessTokens();
+test("listAccessTokens returns masked records (no secret/hash field)", async () => {
+  await at.createAccessToken({ name: "listed", scope: "read" });
+  const list = await at.listAccessTokens();
   assert.ok(list.length >= 1);
   for (const rec of list) {
     assert.ok("tokenPrefix" in rec);

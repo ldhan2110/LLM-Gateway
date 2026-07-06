@@ -20,7 +20,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ prov
   }
 
   const { provider } = await params;
-  const limits = getProviderKeyLimit(provider);
+  const limits = await getProviderKeyLimit(provider);
   return NextResponse.json({ provider, limits: limits ?? null });
 }
 
@@ -46,7 +46,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ prov
   }
 
   const { provider } = await params;
-  setProviderKeyLimit(provider, validation.data);
-  const updated = getProviderKeyLimit(provider);
+  await setProviderKeyLimit(provider, validation.data);
+  const updated = await getProviderKeyLimit(provider);
   return NextResponse.json({ provider, limits: updated });
 }

@@ -41,8 +41,7 @@ export async function GET(request: Request) {
       levelFilter,
     };
 
-    const logs = getAuditLog(filters);
-    const total = countAuditLog(filters);
+    const [logs, total] = await Promise.all([getAuditLog(filters), countAuditLog(filters)]);
     return NextResponse.json(logs, {
       headers: {
         "x-total-count": String(total),

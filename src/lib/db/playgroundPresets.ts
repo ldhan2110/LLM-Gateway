@@ -2,13 +2,13 @@
  * db/playgroundPresets.ts — Playground Studio preset persistence.
  *
  * CRUD operations for the playground_presets table (migration 076).
- * All queries use db.prepare() (better-sqlite3) — never raw db.exec() or
+ * All queries use the async DbClient — never raw db.exec() or
  * string interpolation.
  *
  * @module lib/db/playgroundPresets
  */
 
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 import { randomUUID } from "node:crypto";
 
 // TODO(F1-merge): swap to import from "@/shared/schemas/playground" after F1 lands
@@ -56,22 +56,23 @@ function rowToItem(row: PlaygroundPresetRow): PlaygroundPresetListItem {
 /**
  * Returns all presets ordered by created_at descending (newest first).
  */
-export function listPlaygroundPresets(): PlaygroundPresetListItem[] {
-  const db = getDbInstance();
-  const rows = db
-    .prepare("SELECT * FROM playground_presets ORDER BY created_at DESC")
-    .all() as PlaygroundPresetRow[];
+export async function listPlaygroundPresets(): Promise<PlaygroundPresetListItem[]> {
+  const db = getDbClient();
+  const rows = await db.all<PlaygroundPresetRow>(
+    "SELECT * FROM playground_presets ORDER BY created_at DESC"
+  );
   return rows.map(rowToItem);
 }
 
 /**
  * Returns a single preset by id, or null when not found.
  */
-export function getPlaygroundPreset(id: string): PlaygroundPresetListItem | null {
-  const db = getDbInstance();
-  const row = db
-    .prepare("SELECT * FROM playground_presets WHERE id = ? LIMIT 1")
-    .get(id) as PlaygroundPresetRow | undefined;
+export async function getPlaygroundPreset(id: string): Promise<PlaygroundPresetListItem | null> {
+  const db = getDbClient();
+  const row = await db.get<PlaygroundPresetRow>(
+    "SELECT * FROM playground_presets WHERE id = ? LIMIT 1",
+    id
+  );
   if (!row) return null;
   return rowToItem(row);
 }
@@ -80,23 +81,29 @@ export function getPlaygroundPreset(id: string): PlaygroundPresetListItem | null
  * Creates a new preset. Generates a UUID v4 for the id.
  * Returns the persisted row via getPlaygroundPreset.
  */
-export function createPlaygroundPreset(input: {
+export async function createPlaygroundPreset(input: {
   name: string;
   endpoint: string;
   model: string;
   system: string | null | undefined;
   params: Record<string, unknown>;
-}): PlaygroundPresetListItem {
-  const db = getDbInstance();
+}): Promise<PlaygroundPresetListItem> {
+  const db = getDbClient();
   const id = randomUUID();
   const params_json = JSON.stringify(input.params ?? {});
   const system = input.system ?? null;
 
-  db.prepare(
-    "INSERT INTO playground_presets (id, name, endpoint, model, system, params_json) VALUES (?, ?, ?, ?, ?, ?)"
-  ).run(id, input.name, input.endpoint, input.model, system, params_json);
+  await db.run(
+    "INSERT INTO playground_presets (id, name, endpoint, model, system, params_json) VALUES (?, ?, ?, ?, ?, ?)",
+    id,
+    input.name,
+    input.endpoint,
+    input.model,
+    system,
+    params_json
+  );
 
-  const created = getPlaygroundPreset(id);
+  const created = await getPlaygroundPreset(id);
   // created cannot be null here — we just inserted the row
   return created as PlaygroundPresetListItem;
 }
@@ -105,7 +112,7 @@ export function createPlaygroundPreset(input: {
  * Updates only the supplied fields on an existing preset.
  * Returns the updated row, or null when the id does not exist.
  */
-export function updatePlaygroundPreset(
+export async function updatePlaygroundPreset(
   id: string,
   patch: Partial<{
     name: string;
@@ -114,11 +121,11 @@ export function updatePlaygroundPreset(
     system: string | null;
     params: Record<string, unknown>;
   }>
-): PlaygroundPresetListItem | null {
-  const db = getDbInstance();
+): Promise<PlaygroundPresetListItem | null> {
+  const db = getDbClient();
 
   // Verify row exists before building the dynamic UPDATE
-  const existing = getPlaygroundPreset(id);
+  const existing = await getPlaygroundPreset(id);
   if (!existing) return null;
 
   const setClauses: string[] = [];
@@ -151,7 +158,10 @@ export function updatePlaygroundPreset(
   }
 
   values.push(id);
-  db.prepare(`UPDATE playground_presets SET ${setClauses.join(", ")} WHERE id = ?`).run(...values);
+  await db.run(
+    `UPDATE playground_presets SET ${setClauses.join(", ")} WHERE id = ?`,
+    ...values
+  );
 
   return getPlaygroundPreset(id);
 }
@@ -160,8 +170,8 @@ export function updatePlaygroundPreset(
  * Deletes a preset by id.
  * Returns true when a row was deleted, false when the id did not exist.
  */
-export function deletePlaygroundPreset(id: string): boolean {
-  const db = getDbInstance();
-  const result = db.prepare("DELETE FROM playground_presets WHERE id = ?").run(id);
+export async function deletePlaygroundPreset(id: string): Promise<boolean> {
+  const db = getDbClient();
+  const result = await db.run("DELETE FROM playground_presets WHERE id = ?", id);
   return result.changes > 0;
 }

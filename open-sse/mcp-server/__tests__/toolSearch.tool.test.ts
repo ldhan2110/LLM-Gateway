@@ -13,7 +13,7 @@ describe("omniroute_tool_search", () => {
 
   beforeEach(async () => {
     const [ct, st] = InMemoryTransport.createLinkedPair();
-    const server = createMcpServer();
+    const server = await createMcpServer();
     await server.connect(st);
     client = new Client({ name: "t", version: "1.0.0" });
     await client.connect(ct);

@@ -128,10 +128,10 @@ function recoverStaleBatch(batch: BatchRecord): void {
   console.log(`[BATCH] Recovering stale batch ${batch.id} (${batch.status}) → validating`);
 
   if (batch.outputFileId) {
-    deleteFile(batch.outputFileId);
+    void deleteFile(batch.outputFileId);
   }
   if (batch.errorFileId) {
-    deleteFile(batch.errorFileId);
+    void deleteFile(batch.errorFileId);
   }
 
   updateBatch(batch.id, {
@@ -256,13 +256,13 @@ async function cleanupExpiredBatches(): Promise<void> {
       const outputExpiresAt = getBatchOutputExpiresAt(batch);
 
       if (batch.inputFileId && inputExpiresAt && now > inputExpiresAt) {
-        deleteFile(batch.inputFileId);
+        await deleteFile(batch.inputFileId);
       }
       if (batch.outputFileId && outputExpiresAt && now > outputExpiresAt) {
-        deleteFile(batch.outputFileId);
+        await deleteFile(batch.outputFileId);
       }
       if (batch.errorFileId && outputExpiresAt && now > outputExpiresAt) {
-        deleteFile(batch.errorFileId);
+        await deleteFile(batch.errorFileId);
       }
     }
 
@@ -278,10 +278,10 @@ async function cleanupExpiredBatches(): Promise<void> {
 
     // Cleanup orphan files (batch-purpose files stuck in validating after 48h)
     // Use asc order so oldest files are processed first; use a high limit to avoid missing old orphans.
-    const allFiles = listFiles({ order: "asc", limit: 100 });
+    const allFiles = await listFiles({ order: "asc", limit: 100 });
     for (const file of allFiles) {
       if (file.purpose === "batch" && now - file.createdAt > DEFAULT_BATCH_EXPIRATION_SECONDS) {
-        deleteFile(file.id);
+        await deleteFile(file.id);
       }
     }
   } catch (err) {
@@ -292,7 +292,7 @@ async function cleanupExpiredBatches(): Promise<void> {
 async function startBatch(batch: any): Promise<void> {
   console.log(`[BATCH] Starting batch ${batch.id}`);
 
-  const content = getFileContent(batch.inputFileId);
+  const content = await getFileContent(batch.inputFileId);
   if (!content) {
     failBatch(batch.id, "Input file content not found");
     return;
@@ -772,8 +772,8 @@ async function finalizeBatch(
   // Re-read the batch (with completedAt set) so file creation sees a completion timestamp
   const batchForFiles = getBatch(batchId);
 
-  const outputFileId = createSuccessFile(batchId, batchForFiles, results);
-  const errorFileId = createErrorFile(batchId, batchForFiles, results, itemsWithErrors);
+  const outputFileId = await createSuccessFile(batchId, batchForFiles, results);
+  const errorFileId = await createErrorFile(batchId, batchForFiles, results, itemsWithErrors);
 
   completeBatch(batchId, outputFileId, errorFileId);
 }
@@ -820,14 +820,18 @@ function now(): number {
   return Math.floor(Date.now() / 1_000);
 }
 
-function createSuccessFile(batchId: string, current: any, results: any[]): string | null {
+async function createSuccessFile(
+  batchId: string,
+  current: any,
+  results: any[]
+): Promise<string | null> {
   const successes = results.filter((r) => r.response.status_code < 400 && !r.response.body?.error);
 
   if (successes.length === 0) return null;
 
   const content = toJsonl(successes);
 
-  const file = createFile({
+  const file = await createFile({
     bytes: Buffer.byteLength(content),
     filename: `batch_${batchId}_output.jsonl`,
     purpose: "batch_output",
@@ -839,12 +843,12 @@ function createSuccessFile(batchId: string, current: any, results: any[]): strin
   return file.id;
 }
 
-function createErrorFile(
+async function createErrorFile(
   batchId: string,
   current: any,
   results: any[],
   itemsWithErrors: any[]
-): string | null {
+): Promise<string | null> {
   const failures = results.filter((r) => r.response.status_code >= 400 || r.response.body?.error);
 
   const processErrors = itemsWithErrors.map((e) => ({
@@ -860,7 +864,7 @@ function createErrorFile(
 
   const content = toJsonl(allFailures);
 
-  const file = createFile({
+  const file = await createFile({
     bytes: Buffer.byteLength(content),
     filename: `batch_${batchId}_error.jsonl`,
     purpose: "batch_output",

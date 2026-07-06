@@ -36,15 +36,18 @@ let _loaded = false;
  */
 function ensureLoaded() {
   if (_loaded) return;
-  try {
-    const all = loadAllFallbackChains();
-    for (const [model, chain] of Object.entries(all)) {
-      fallbackChains.set(model, chain);
-    }
-  } catch {
-    // DB may not be ready yet (build phase), that's ok
-  }
   _loaded = true;
+  loadAllFallbackChains()
+    .then((all) => {
+      for (const [model, chain] of Object.entries(all)) {
+        if (!fallbackChains.has(model)) {
+          fallbackChains.set(model, chain);
+        }
+      }
+    })
+    .catch(() => {
+      // DB may not be ready yet (build phase), that's ok
+    });
 }
 
 /**
@@ -64,11 +67,9 @@ export function registerFallback(model, chain) {
     .sort((a, b) => a.priority - b.priority);
 
   fallbackChains.set(model, sorted);
-  try {
-    saveFallbackChain(model, sorted);
-  } catch {
+  saveFallbackChain(model, sorted).catch(() => {
     // Non-critical: in-memory still works
-  }
+  });
 }
 
 /**
@@ -122,11 +123,9 @@ export function removeFallback(model) {
   ensureLoaded();
   const removed = fallbackChains.delete(model);
   if (removed) {
-    try {
-      deleteFallbackChain(model);
-    } catch {
+    deleteFallbackChain(model).catch(() => {
       // Non-critical
-    }
+    });
   }
   return removed;
 }
@@ -152,9 +151,7 @@ export function getAllFallbackChains() {
 export function resetAllFallbacks() {
   fallbackChains.clear();
   _loaded = false;
-  try {
-    deleteAllFallbackChains();
-  } catch {
+  deleteAllFallbackChains().catch(() => {
     // Non-critical
-  }
+  });
 }

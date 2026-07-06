@@ -2,7 +2,7 @@
  * Memory store - CRUD operations with prepared statements and caching
  */
 
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 import { upsertSemanticMemoryPoint, deleteSemanticMemoryPoint } from "./qdrant";
 import { Memory, MemoryType } from "./types";
 import { logger } from "../../../open-sse/utils/logger.ts";
@@ -90,16 +90,17 @@ function rowToMemory(row: MemoryRow): Memory {
 /**
  * Find existing memory by apiKeyId and key (for UPSERT logic)
  */
-function findExistingMemory(
-  db: ReturnType<typeof getDbInstance>,
+async function findExistingMemory(
   apiKeyId: string,
   key: string
-): MemoryRow | undefined {
+): Promise<MemoryRow | undefined> {
   if (!key) return undefined;
-  const stmt = db.prepare(
-    "SELECT * FROM memories WHERE api_key_id = ? AND key = ? ORDER BY created_at DESC LIMIT 1"
+  const db = getDbClient();
+  return db.get<MemoryRow>(
+    "SELECT * FROM memories WHERE api_key_id = ? AND key = ? ORDER BY created_at DESC LIMIT 1",
+    apiKeyId,
+    key
   );
-  return stmt.get(apiKeyId, key) as MemoryRow | undefined;
 }
 
 /**
@@ -112,11 +113,9 @@ function findExistingMemory(
  * unhandledRejection. Producing this side-effect is opportunistic by design.
  */
 function safeMarkNeedsReindex(id: string, needs: boolean): void {
-  try {
-    markMemoryNeedsReindex(id, needs);
-  } catch {
+  markMemoryNeedsReindex(id, needs).catch(() => {
     // intentional swallow — DB may be closed (test teardown) or schema not yet ready
-  }
+  });
 }
 
 function scheduleVectorUpsert(id: string, content: string): void {
@@ -162,19 +161,17 @@ function scheduleVectorUpsert(id: string, content: string): void {
 export async function createMemory(
   memory: Omit<Memory, "id" | "createdAt" | "updatedAt" | "accessCount" | "lastAccessedAt">
 ): Promise<Memory> {
-  const db = getDbInstance();
+  const db = getDbClient();
   const now = new Date().toISOString();
 
   // Check for existing memory with same apiKeyId + key (UPSERT logic)
-  const existing = memory.key ? findExistingMemory(db, memory.apiKeyId, memory.key) : undefined;
+  const existing = memory.key ? await findExistingMemory(memory.apiKeyId, memory.key) : undefined;
 
   if (existing) {
     // UPDATE existing record
     const updatedMetadata = { ...parseJSON(existing.metadata), ...memory.metadata };
-    const stmt = db.prepare(
-      "UPDATE memories SET content = ?, metadata = ?, updated_at = ?, session_id = ?, type = ?, expires_at = ? WHERE id = ?"
-    );
-    stmt.run(
+    await db.run(
+      "UPDATE memories SET content = ?, metadata = ?, updated_at = ?, session_id = ?, type = ?, expires_at = ? WHERE id = ?",
       memory.content,
       JSON.stringify(updatedMetadata),
       now,
@@ -240,12 +237,9 @@ export async function createMemory(
 
   // INSERT new record if not exists
   const id = crypto.randomUUID();
-  const stmt = db.prepare(
+  await db.run(
     "INSERT INTO memories (id, api_key_id, session_id, type, key, content, metadata, created_at, updated_at, expires_at) " +
-      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-  );
-
-  stmt.run(
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     id,
     memory.apiKeyId,
     memory.sessionId,
@@ -316,9 +310,8 @@ export async function getMemory(id: string): Promise<Memory | null> {
     return cached.value;
   }
 
-  const db = getDbInstance();
-  const stmt = db.prepare("SELECT * FROM memories WHERE id = ?");
-  const row = stmt.get(id) as MemoryRow | undefined;
+  const db = getDbClient();
+  const row = await db.get<MemoryRow>("SELECT * FROM memories WHERE id = ?", id);
 
   if (!row) {
     // Cache negative result briefly to prevent repeated DB hits
@@ -345,13 +338,14 @@ export async function updateMemory(
 ): Promise<boolean> {
   if (!id || typeof id !== "string") return false;
 
-  const db = getDbInstance();
+  const db = getDbClient();
   const now = new Date().toISOString();
 
   // Fetch current state to detect content/key change (needed for vector re-gen)
-  const currentRow = db.prepare("SELECT content, key FROM memories WHERE id = ?").get(id) as
-    | { content: string; key: string | null }
-    | undefined;
+  const currentRow = await db.get<{ content: string; key: string | null }>(
+    "SELECT content, key FROM memories WHERE id = ?",
+    id
+  );
 
   // Build dynamic update query
   const fields: string[] = [];
@@ -384,9 +378,7 @@ export async function updateMemory(
 
   values.push(id); // For WHERE clause
 
-  const stmt = db.prepare(`UPDATE memories SET ${fields.join(", ")} WHERE id = ?`);
-
-  const result = stmt.run(...values);
+  const result = await db.run(`UPDATE memories SET ${fields.join(", ")} WHERE id = ?`, ...values);
 
   if (result.changes === 0) {
     return false;
@@ -436,9 +428,8 @@ export async function deleteMemory(id: string): Promise<boolean> {
   );
 
   // 3. Delete from SQLite
-  const db = getDbInstance();
-  const stmt = db.prepare("DELETE FROM memories WHERE id = ?");
-  const result = stmt.run(id);
+  const db = getDbClient();
+  const result = await db.run("DELETE FROM memories WHERE id = ?", id);
 
   if (result.changes === 0) {
     return false;
@@ -464,7 +455,7 @@ export async function listMemories(filters: {
   offset?: number;
   page?: number;
 }): Promise<{ data: Memory[]; total: number; byType: Record<string, number> }> {
-  const db = getDbInstance();
+  const db = getDbClient();
 
   // Build dynamic query conditions
   const whereClauses: string[] = [];
@@ -496,9 +487,8 @@ export async function listMemories(filters: {
   if (whereClauses.length > 0) {
     countQuery += " WHERE " + whereClauses.join(" AND ");
   }
-  const countStmt = db.prepare(countQuery);
-  const countRow = countStmt.get(...whereParams) as { total: number };
-  const total = countRow.total;
+  const countRow = await db.get<{ total: number }>(countQuery, ...whereParams);
+  const total = countRow?.total ?? 0;
 
   // Build byType aggregation (counts ALL matching rows, not just the page)
   let byTypeQuery = "SELECT type, COUNT(*) as count FROM memories";
@@ -507,8 +497,7 @@ export async function listMemories(filters: {
     byTypeQuery += " WHERE " + whereClauses.join(" AND ");
   }
   byTypeQuery += " GROUP BY type";
-  const byTypeStmt = db.prepare(byTypeQuery);
-  const byTypeRows = byTypeStmt.all(...byTypeParams) as { type: string; count: number }[];
+  const byTypeRows = await db.all<{ type: string; count: number }>(byTypeQuery, ...byTypeParams);
   const byType = Object.fromEntries(byTypeRows.map((r) => [r.type, r.count])) as Record<
     string,
     number
@@ -531,11 +520,10 @@ export async function listMemories(filters: {
   // Build params for SELECT query (WHERE params + pagination params)
   const params = [...whereParams, effectiveLimit, effectiveOffset];
 
-  const stmt = db.prepare(query);
-  const rows = stmt.all(...params);
+  const rows = await db.all<MemoryRow>(query, ...params);
 
   return {
-    data: (rows as MemoryRow[]).map(rowToMemory),
+    data: rows.map(rowToMemory),
     total,
     byType,
   };
@@ -546,13 +534,13 @@ export async function listMemories(filters: {
  * SQL so we never load every memory's content into process memory. Scoped to a
  * single API key when `apiKeyId` is provided, otherwise counts all memories.
  */
-export function getMemoryTokensUsed(apiKeyId?: string): number {
-  const db = getDbInstance();
-  const stmt = db.prepare(
+export async function getMemoryTokensUsed(apiKeyId?: string): Promise<number> {
+  const db = getDbClient();
+  const row = await db.get<{ tokensUsed: number }>(
     "SELECT COALESCE(SUM((LENGTH(content) + 3) / 4), 0) as tokensUsed FROM memories" +
-      (apiKeyId ? " WHERE api_key_id = ?" : "")
+      (apiKeyId ? " WHERE api_key_id = ?" : ""),
+    ...(apiKeyId ? [apiKeyId] : [])
   );
-  const row = stmt.get(...(apiKeyId ? [apiKeyId] : [])) as { tokensUsed: number } | undefined;
   return row?.tokensUsed ?? 0;
 }
 
@@ -563,18 +551,19 @@ export function getMemoryTokensUsed(apiKeyId?: string): number {
  * any error (DB closed in test teardown, missing columns pre-migration) is swallowed so
  * retrieval is never impacted.
  */
-export function recordMemoryAccess(ids: string[]): void {
+export async function recordMemoryAccess(ids: string[]): Promise<void> {
   if (!Array.isArray(ids) || ids.length === 0) return;
   const unique = Array.from(new Set(ids.filter((id) => typeof id === "string" && id)));
   if (unique.length === 0) return;
   try {
-    const db = getDbInstance();
+    const db = getDbClient();
     const placeholders = unique.map(() => "?").join(", ");
-    const stmt = db.prepare(
+    await db.run(
       `UPDATE memories SET access_count = access_count + 1, last_accessed_at = ? ` +
-        `WHERE id IN (${placeholders})`
+        `WHERE id IN (${placeholders})`,
+      new Date().toISOString(),
+      ...unique
     );
-    stmt.run(new Date().toISOString(), ...unique);
     for (const id of unique) invalidateMemoryCache(id);
   } catch {
     // intentional swallow — access tracking is opportunistic telemetry, never load-bearing
@@ -586,31 +575,31 @@ export function recordMemoryAccess(ids: string[]): void {
  * predicates read (no content/metadata), ordered oldest-first and bounded by `limit`, so a
  * sweep never materializes whole memories or scans unboundedly.
  */
-export function listMemoriesForDecay(filters: {
+export async function listMemoriesForDecay(filters: {
   apiKeyId?: string;
   limit: number;
-}): {
+}): Promise<{
   id: string;
   type: MemoryType;
   accessCount: number;
   createdAt: Date;
   lastAccessedAt: Date | null;
-}[] {
-  const db = getDbInstance();
+}[]> {
+  const db = getDbClient();
   const where = filters.apiKeyId ? " WHERE api_key_id = ?" : "";
   const params: unknown[] = filters.apiKeyId ? [filters.apiKeyId] : [];
   params.push(Math.max(1, Math.floor(filters.limit)));
-  const stmt = db.prepare(
-    `SELECT id, type, access_count, created_at, last_accessed_at FROM memories${where} ` +
-      `ORDER BY created_at ASC LIMIT ?`
-  );
-  const rows = stmt.all(...params) as {
+  const rows = await db.all<{
     id: string;
     type: string;
     access_count: number | null;
     created_at: string;
     last_accessed_at: string | null;
-  }[];
+  }>(
+    `SELECT id, type, access_count, created_at, last_accessed_at FROM memories${where} ` +
+      `ORDER BY created_at ASC LIMIT ?`,
+    ...params
+  );
   return rows.map((r) => ({
     id: String(r.id),
     type: r.type as MemoryType,

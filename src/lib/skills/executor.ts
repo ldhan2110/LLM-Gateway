@@ -1,6 +1,6 @@
 import { skillRegistry } from "./registry";
 import { SkillExecution, SkillStatus, SkillHandler } from "./types";
-import { getDbInstance } from "../db/core";
+import { getDbClient } from "../db/core";
 import { getSettings } from "../db/settings";
 import { randomUUID } from "crypto";
 import { logger } from "../../../open-sse/utils/logger.ts";
@@ -53,17 +53,16 @@ class SkillExecutor {
       throw new Error(`Skill is disabled: ${skillName}`);
     }
 
-    const db = getDbInstance();
+    const db = getDbClient();
     const executionId = randomUUID();
     const startTime = Date.now();
 
     log.info("skills.executor.start", { skillId: skill.id, skillName, apiKeyId: context.apiKeyId });
 
     try {
-      db.prepare(
+      await db.run(
         `INSERT INTO skill_executions (id, skill_id, api_key_id, session_id, input, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         executionId,
         skill.id,
         context.apiKeyId,
@@ -94,9 +93,14 @@ class SkillExecutor {
 
       const durationMs = Date.now() - startTime;
 
-      db.prepare(
-        `UPDATE skill_executions SET output = ?, status = ?, error_message = ?, duration_ms = ? WHERE id = ?`
-      ).run(output ? JSON.stringify(output) : null, status, errorMessage, durationMs, executionId);
+      await db.run(
+        `UPDATE skill_executions SET output = ?, status = ?, error_message = ?, duration_ms = ? WHERE id = ?`,
+        output ? JSON.stringify(output) : null,
+        status,
+        errorMessage,
+        durationMs,
+        executionId
+      );
 
       log.info("skills.executor.complete", {
         skillId: skill.id,
@@ -120,9 +124,13 @@ class SkillExecutor {
       const durationMs = Date.now() - startTime;
       const errorMessage = err instanceof Error ? err.message : String(err);
 
-      db.prepare(
-        `UPDATE skill_executions SET status = ?, error_message = ?, duration_ms = ? WHERE id = ?`
-      ).run(SkillStatus.ERROR, errorMessage, durationMs, executionId);
+      await db.run(
+        `UPDATE skill_executions SET status = ?, error_message = ?, duration_ms = ? WHERE id = ?`,
+        SkillStatus.ERROR,
+        errorMessage,
+        durationMs,
+        executionId
+      );
 
       throw err;
     }
@@ -137,9 +145,9 @@ class SkillExecutor {
     ]);
   }
 
-  getExecution(executionId: string): SkillExecution | undefined {
-    const db = getDbInstance();
-    const row = db.prepare("SELECT * FROM skill_executions WHERE id = ?").get(executionId) as any;
+  async getExecution(executionId: string): Promise<SkillExecution | undefined> {
+    const db = getDbClient();
+    const row = await db.get<any>("SELECT * FROM skill_executions WHERE id = ?", executionId);
     if (!row) return undefined;
 
     return {
@@ -156,19 +164,26 @@ class SkillExecutor {
     };
   }
 
-  listExecutions(apiKeyId?: string, limit: number = 50, offset: number = 0): SkillExecution[] {
-    const db = getDbInstance();
+  async listExecutions(
+    apiKeyId?: string,
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<SkillExecution[]> {
+    const db = getDbClient();
     const rows = apiKeyId
-      ? db
-          .prepare(
-            "SELECT * FROM skill_executions WHERE api_key_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?"
-          )
-          .all(apiKeyId, limit, offset)
-      : db
-          .prepare("SELECT * FROM skill_executions ORDER BY created_at DESC LIMIT ? OFFSET ?")
-          .all(limit, offset);
+      ? await db.all<any>(
+          "SELECT * FROM skill_executions WHERE api_key_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+          apiKeyId,
+          limit,
+          offset
+        )
+      : await db.all<any>(
+          "SELECT * FROM skill_executions ORDER BY created_at DESC LIMIT ? OFFSET ?",
+          limit,
+          offset
+        );
 
-    return (rows as any[]).map((row) => ({
+    return rows.map((row) => ({
       id: row.id,
       skillId: row.skill_id,
       apiKeyId: row.api_key_id,
@@ -182,13 +197,14 @@ class SkillExecutor {
     }));
   }
 
-  countExecutions(apiKeyId?: string): number {
-    const db = getDbInstance();
+  async countExecutions(apiKeyId?: string): Promise<number> {
+    const db = getDbClient();
     const row = apiKeyId
-      ? (db
-          .prepare("SELECT COUNT(*) as count FROM skill_executions WHERE api_key_id = ?")
-          .get(apiKeyId) as any)
-      : (db.prepare("SELECT COUNT(*) as count FROM skill_executions").get() as any);
+      ? await db.get<{ count: number }>(
+          "SELECT COUNT(*) as count FROM skill_executions WHERE api_key_id = ?",
+          apiKeyId
+        )
+      : await db.get<{ count: number }>("SELECT COUNT(*) as count FROM skill_executions");
     return row?.count ?? 0;
   }
 }

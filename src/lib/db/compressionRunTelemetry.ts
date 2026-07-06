@@ -1,4 +1,4 @@
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 export interface CompressionRunTelemetryInput {
   requestId: string;
@@ -23,11 +23,11 @@ export interface CompressionRunTelemetrySummary {
   appliedStyleCounts: Record<string, number>;
 }
 
-function ensureCompressionRunTelemetryTable(): void {
-  const db = getDbInstance();
+async function ensureCompressionRunTelemetryTable(): Promise<void> {
+  const db = getDbClient();
   // `CREATE TABLE IF NOT EXISTS` is idempotent and cheap; run it unconditionally so the
   // table self-heals if it was dropped (e.g. test isolation) under the same db handle.
-  db.exec(`
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS compression_run_telemetry (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp INTEGER NOT NULL,
@@ -51,17 +51,18 @@ function ensureCompressionRunTelemetryTable(): void {
  * the `timestamp` is stamped here (never inside the pure resolvers). Mirrors the
  * compression-stats / compressionAnalytics recording discipline — never throws into a request.
  */
-export function insertCompressionRunTelemetryRow(row: CompressionRunTelemetryInput): void {
+export async function insertCompressionRunTelemetryRow(
+  row: CompressionRunTelemetryInput
+): Promise<void> {
   try {
-    const db = getDbInstance();
-    ensureCompressionRunTelemetryTable();
-    db.prepare(
+    const db = getDbClient();
+    await ensureCompressionRunTelemetryTable();
+    await db.run(
       `INSERT INTO compression_run_telemetry (
         timestamp, request_id, model, provider, source,
         tokens_before, tokens_after, ratio, cost_delta,
         output_styles, output_style_bypass, output_tokens
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       Date.now(),
       row.requestId ?? null,
       row.model ?? null,
@@ -80,21 +81,19 @@ export function insertCompressionRunTelemetryRow(row: CompressionRunTelemetryInp
   }
 }
 
-export function getCompressionRunTelemetrySummary(): CompressionRunTelemetrySummary {
-  const db = getDbInstance();
-  ensureCompressionRunTelemetryTable();
-  const rows = db
-    .prepare(
-      `SELECT tokens_before, tokens_after, output_styles, output_style_bypass, output_tokens
-       FROM compression_run_telemetry`
-    )
-    .all() as Array<{
+export async function getCompressionRunTelemetrySummary(): Promise<CompressionRunTelemetrySummary> {
+  const db = getDbClient();
+  await ensureCompressionRunTelemetryTable();
+  const rows = await db.all<{
     tokens_before: number;
     tokens_after: number;
     output_styles: string | null;
     output_style_bypass: string | null;
     output_tokens: number | null;
-  }>;
+  }>(
+    `SELECT tokens_before, tokens_after, output_styles, output_style_bypass, output_tokens
+       FROM compression_run_telemetry`
+  );
 
   const summary: CompressionRunTelemetrySummary = {
     totalRuns: rows.length,

@@ -299,20 +299,21 @@ test("rate-limit helpers persist cooldown state in the database", async () => {
   });
   const future = Date.now() + 90_000;
 
-  providersDb.setConnectionRateLimitUntil((connection as any).id, future);
+  await providersDb.setConnectionRateLimitUntil((connection as any).id, future);
 
-  assert.equal(providersDb.isConnectionRateLimited((connection as any).id), true);
+  assert.equal(await providersDb.isConnectionRateLimited((connection as any).id), true);
   assert.deepEqual(
-    providersDb
-      .getRateLimitedConnections("openai")
-      .map((entry) => ({ ...entry, rateLimitedUntil: Number(entry.rateLimitedUntil) })),
+    (await providersDb.getRateLimitedConnections("openai")).map((entry) => ({
+      ...entry,
+      rateLimitedUntil: Number(entry.rateLimitedUntil),
+    })),
     [{ id: connection.id, rateLimitedUntil: future }]
   );
 
-  providersDb.setConnectionRateLimitUntil((connection as any).id, null);
+  await providersDb.setConnectionRateLimitUntil((connection as any).id, null);
 
-  assert.equal(providersDb.isConnectionRateLimited((connection as any).id), false);
-  assert.deepEqual(providersDb.getRateLimitedConnections("openai"), []);
+  assert.equal(await providersDb.isConnectionRateLimited((connection as any).id), false);
+  assert.deepEqual(await providersDb.getRateLimitedConnections("openai"), []);
 });
 
 test("quota helpers zero stale windows and format countdowns", () => {

@@ -1,4 +1,4 @@
-import { getDbInstance } from "./core";
+import { getDbClient } from "./core";
 
 const NOTION_NAMESPACE = "notion";
 const NOTION_TOKEN_KEY = "integration_token";
@@ -7,33 +7,39 @@ type KeyValueRow = {
   value?: string;
 };
 
-export function getNotionToken(): string | null {
+export async function getNotionToken(): Promise<string | null> {
   try {
-    const db = getDbInstance();
-    const row = db
-      .prepare("SELECT value FROM key_value WHERE namespace = ? AND key = ?")
-      .get(NOTION_NAMESPACE, NOTION_TOKEN_KEY) as KeyValueRow | undefined;
+    const db = getDbClient();
+    const row = await db.get<KeyValueRow>(
+      "SELECT value FROM key_value WHERE namespace = ? AND key = ?",
+      NOTION_NAMESPACE,
+      NOTION_TOKEN_KEY
+    );
     return typeof row?.value === "string" ? JSON.parse(row.value) : null;
   } catch {
     return null;
   }
 }
 
-export function setNotionToken(token: string): void {
+export async function setNotionToken(token: string): Promise<void> {
   try {
-    const db = getDbInstance();
-    db.prepare(
-      "INSERT OR IGNORE INTO key_value (namespace, key, value) VALUES (?, ?, ?)"
-    ).run(NOTION_NAMESPACE, NOTION_TOKEN_KEY, JSON.stringify(token));
+    const db = getDbClient();
+    await db.run(
+      "INSERT OR IGNORE INTO key_value (namespace, key, value) VALUES (?, ?, ?)",
+      NOTION_NAMESPACE,
+      NOTION_TOKEN_KEY,
+      JSON.stringify(token)
+    );
   } catch {
     // Non-fatal — token still works in-memory if persistence fails.
   }
 }
 
-export function clearNotionToken(): void {
+export async function clearNotionToken(): Promise<void> {
   try {
-    const db = getDbInstance();
-    db.prepare("DELETE FROM key_value WHERE namespace = ? AND key = ?").run(
+    const db = getDbClient();
+    await db.run(
+      "DELETE FROM key_value WHERE namespace = ? AND key = ?",
       NOTION_NAMESPACE,
       NOTION_TOKEN_KEY
     );
@@ -42,7 +48,7 @@ export function clearNotionToken(): void {
   }
 }
 
-export function getNotionConfig(): { token: string | null; connected: boolean } {
-  const token = getNotionToken();
+export async function getNotionConfig(): Promise<{ token: string | null; connected: boolean }> {
+  const token = await getNotionToken();
   return { token, connected: token !== null && token.length > 0 };
 }

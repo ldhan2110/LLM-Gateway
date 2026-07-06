@@ -147,7 +147,7 @@ test("cleanupExpiredLogs honors the dashboard usageHistory retention when env is
     const db = core.getDbInstance();
 
     const { updateDatabaseSettings } = await import("../../src/lib/db/databaseSettings.ts");
-    updateDatabaseSettings({ retention: { usageHistory: 90, callLogs: 90 } } as any);
+    await updateDatabaseSettings({ retention: { usageHistory: 90, callLogs: 90 } } as any);
 
     const oldTs = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
     db.prepare(

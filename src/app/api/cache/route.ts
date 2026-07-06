@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
     const rawHours = parseInt(searchParams.get("trendHours") || "24", 10);
     const trendHours = Math.min(720, Math.max(1, Number.isNaN(rawHours) ? 24 : rawHours));
 
-    const cacheStats = getCacheStats();
+    const cacheStats = await getCacheStats();
     const idempotencyStats = await getIdempotencyStats();
     const promptCacheMetrics = await getCacheMetrics();
     const trend = await getCacheTrend(trendHours);
@@ -70,12 +70,12 @@ export async function DELETE(req: NextRequest) {
     }
 
     if (model) {
-      const removed = invalidateByModel(model);
+      const removed = await invalidateByModel(model);
       return NextResponse.json({ ok: true, invalidated: removed, scope: "model", model });
     }
 
     if (signature) {
-      const removed = invalidateBySignature(signature);
+      const removed = await invalidateBySignature(signature);
       return NextResponse.json({ ok: true, invalidated: removed ? 1 : 0, scope: "signature" });
     }
 
@@ -87,12 +87,12 @@ export async function DELETE(req: NextRequest) {
           { status: 400 }
         );
       }
-      const removed = invalidateStale(maxAgeMs);
+      const removed = await invalidateStale(maxAgeMs);
       return NextResponse.json({ ok: true, invalidated: removed, scope: "stale", maxAgeMs });
     }
 
     // Full clear
-    const cleared = clearCache();
+    const cleared = await clearCache();
     return NextResponse.json({ ok: true, cleared, scope: "all" });
   } catch (error) {
     return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
