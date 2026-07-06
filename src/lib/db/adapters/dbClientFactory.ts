@@ -76,7 +76,12 @@ async function createPgClient(): Promise<DbClient> {
     );
   }
 
-  return createPostgresDbClient(pool);
+  // Run PG migrations
+  const pgClient = createPostgresDbClient(pool);
+  const { runPgMigrations } = await import("../pgMigrationRunner");
+  await runPgMigrations(pgClient);
+
+  return pgClient;
 }
 
 /**
