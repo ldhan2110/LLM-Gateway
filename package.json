@@ -292,6 +292,7 @@
     "better-sqlite3": "^12.10.0",
     "js-tiktoken": "^1.0.20",
     "keytar": "^7.9.0",
+    "pg": "^8.22.0",
     "tls-client-node": "^0.2.0",
     "wreq-js": "^2.3.1"
   },
@@ -308,6 +309,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/bun": "latest",
     "@types/node": "^26.0.0",
+    "@types/pg": "^8.20.0",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@types/safe-regex": "^1.1.6",
