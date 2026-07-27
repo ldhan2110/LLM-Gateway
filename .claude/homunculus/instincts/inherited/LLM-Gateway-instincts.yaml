@@ -1,0 +1,259 @@
+# Instincts generated from https://github.com/ldhan2110/LLM-Gateway
+# Generated: 2026-07-27T23:21:45.909Z
+# Version: 2.0
+# NOTE: This file supplements (does not replace) any existing curated instincts.
+# High-confidence manually curated instincts should be preserved alongside these.
+
+---
+id: LLM-Gateway-commit-length
+trigger: "when writing a commit message"
+confidence: 0.6
+domain: git
+source: repo-analysis
+source_repo: https://github.com/ldhan2110/LLM-Gateway
+---
+
+# LLM Gateway Commit Length
+
+## Action
+
+Write moderate-length commit messages (~66 characters)
+
+## Evidence
+
+- Average commit message length: 66 chars
+- Based on 1 commits
+
+---
+id: LLM-Gateway-naming-files
+trigger: "when creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/ldhan2110/LLM-Gateway
+---
+
+# LLM Gateway Naming Files
+
+## Action
+
+Use camelCase naming convention
+
+## Evidence
+
+- Analyzed file naming patterns in repository
+- Dominant pattern: camelCase
+
+---
+id: LLM-Gateway-import-relative
+trigger: "when importing modules"
+confidence: 0.75
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/ldhan2110/LLM-Gateway
+---
+
+# LLM Gateway Import Relative
+
+## Action
+
+Use relative imports for project files
+
+## Evidence
+
+- Import analysis shows relative import pattern
+- Example: import { x } from '../lib/x'
+
+---
+id: LLM-Gateway-export-style
+trigger: "when exporting from a module"
+confidence: 0.7
+domain: code-style
+source: repo-analysis
+source_repo: https://github.com/ldhan2110/LLM-Gateway
+---
+
+# LLM Gateway Export Style
+
+## Action
+
+Prefer named exports
+
+## Evidence
+
+- Export pattern analysis
+- Dominant style: named
+
+---
+id: LLM-Gateway-test-separate
+trigger: "when writing tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: https://github.com/ldhan2110/LLM-Gateway
+---
+
+# LLM Gateway Test Separate
+
+## Action
+
+Place tests in the tests/ or __tests__/ directory, mirroring src structure
+
+## Evidence
+
+- Separate test directory pattern detected
+- Tests live in dedicated test folders
+
+---
+id: llm-gateway-instinct-filename-camelcase
+trigger: "When creating a new file"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: ldhan2110/LLM-Gateway
+---
+
+# Llm Gateway Instinct Filename Camelcase
+
+## Action
+
+Name the file using camelCase
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.files
+
+---
+id: llm-gateway-instinct-function-camelcase
+trigger: "When defining a function"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: ldhan2110/LLM-Gateway
+---
+
+# Llm Gateway Instinct Function Camelcase
+
+## Action
+
+Name the function using camelCase
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.functions
+
+---
+id: llm-gateway-instinct-class-pascalcase
+trigger: "When defining a class"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: ldhan2110/LLM-Gateway
+---
+
+# Llm Gateway Instinct Class Pascalcase
+
+## Action
+
+Name the class using PascalCase
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.classes
+
+---
+id: llm-gateway-instinct-constant-screaming-snake-case
+trigger: "When defining a constant"
+confidence: 0.9
+domain: code-style
+source: repo-analysis
+source_repo: ldhan2110/LLM-Gateway
+---
+
+# Llm Gateway Instinct Constant Screaming Snake Case
+
+## Action
+
+Name the constant using SCREAMING_SNAKE_CASE
+
+## Evidence
+
+- Pattern in codeStyle.namingConventions.constants
+
+---
+id: llm-gateway-instinct-import-relative
+trigger: "When importing a module"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: ldhan2110/LLM-Gateway
+---
+
+# Llm Gateway Instinct Import Relative
+
+## Action
+
+Use relative import paths
+
+## Evidence
+
+- Pattern in codeStyle.importStyle
+
+---
+id: llm-gateway-instinct-export-named
+trigger: "When exporting from a module"
+confidence: 0.8
+domain: code-style
+source: repo-analysis
+source_repo: ldhan2110/LLM-Gateway
+---
+
+# Llm Gateway Instinct Export Named
+
+## Action
+
+Use named exports
+
+## Evidence
+
+- Pattern in codeStyle.exportStyle
+
+---
+id: llm-gateway-instinct-test-location-separate
+trigger: "When adding or updating tests"
+confidence: 0.8
+domain: testing
+source: repo-analysis
+source_repo: ldhan2110/LLM-Gateway
+---
+
+# Llm Gateway Instinct Test Location Separate
+
+## Action
+
+Place test files in a separate directory from source files
+
+## Evidence
+
+- Pattern in architecture.folderStructure.testLocation
+
+---
+id: llm-gateway-instinct-git-deps-prefix
+trigger: "When committing dependency updates"
+confidence: 0.9
+domain: git
+source: repo-analysis
+source_repo: ldhan2110/LLM-Gateway
+---
+
+# Llm Gateway Instinct Git Deps Prefix
+
+## Action
+
+Prefix the commit message with 'deps:'
+
+## Evidence
+
+- Pattern in commits.prefixes
+- Example: 'deps: bump the production group...'
+
